@@ -10,3 +10,4 @@ function(writero_add_test name)
 endfunction()
 
 writero_add_test(tst_app_info core/tst_app_info.cpp)
+writero_add_test(tst_document document/tst_document.cpp)

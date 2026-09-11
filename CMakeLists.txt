@@ -27,6 +27,17 @@ qt_standard_project_setup(REQUIRES 6.5)
 add_library(writero_core STATIC
     src/core/AppInfo.h
     src/core/AppInfo.cpp
+    src/document/block.h
+    src/document/block.cpp
+    src/document/blocktype.h
+    src/document/blocktype.cpp
+    src/document/document.h
+    src/document/document.cpp
+    src/document/documentchange.h
+    src/document/documentsession.h
+    src/document/documentsession.cpp
+    src/document/listcontent.h
+    src/document/listcontent.cpp
 )
 target_include_directories(writero_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(writero_core PUBLIC
