@@ -14,7 +14,15 @@ writero_add_test(tst_aiclient ai/tst_aiclient.cpp)
 writero_add_test(tst_document document/tst_document.cpp)
 writero_add_test(tst_documentio document/tst_documentio.cpp)
 writero_add_test(tst_markdown markdown/tst_markdown.cpp)
+writero_add_test(tst_textactions ai/tst_textactions.cpp)
 writero_add_test(tst_workspacestore storage/tst_workspacestore.cpp)
+
+add_executable(tst_aicontroller ai/tst_aicontroller.cpp)
+target_link_libraries(tst_aicontroller PRIVATE writero_ui writero_uiplugin Qt6::Test)
+add_test(NAME tst_aicontroller COMMAND tst_aicontroller)
+set_tests_properties(tst_aicontroller PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_RUNTIME_DIR=${CMAKE_BINARY_DIR}/runtime"
+)
 
 add_executable(tst_providerregistry ai/tst_providerregistry.cpp)
 target_link_libraries(tst_providerregistry PRIVATE writero_ui writero_uiplugin Qt6::Test)

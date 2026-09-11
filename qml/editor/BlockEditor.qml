@@ -10,6 +10,8 @@ Item {
     property int editingIndex: -1
     property int focusCursor: -1
 
+    signal aiRequested(int index)
+
     function editBlock(index, cursor) {
         if (!controller)
             return
@@ -112,6 +114,7 @@ Item {
             onAttachRequested: (index, source) => root.controller.attachMedia(index, source)
             onLanguageRequested: (index, language) =>
                 root.controller.setBlockMetadataValue(index, "language", language)
+            onAiRequested: (index) => root.aiRequested(index)
         }
 
         onCountChanged: {

@@ -66,6 +66,29 @@ public:
     /// Appends an already-formed revision (bundle import, history restore).
     bool insertRevision(const QString &documentId, const Revision &revision);
 
+    struct AiResultRecord
+    {
+        QString id;
+        QString documentId;
+        QString blockId;
+        QString kind;
+        QString providerId;
+        QString model;
+        QString prompt;
+        QString status;
+        QString content;
+        QString error;
+        int baseRevision = 0;
+        QString batchId;
+        QDateTime createdAt;
+    };
+
+    bool saveAiResult(const AiResultRecord &result);
+    QVector<AiResultRecord> aiResults(const QString &documentId, const QString &blockId = QString(),
+                                      int limit = 50);
+    bool updateAiResult(const QString &resultId, const QString &status,
+                        const QString &content = QString(), const QString &error = QString());
+
     struct MediaRecord
     {
         qint64 id = 0;

@@ -28,6 +28,13 @@ QString nowIso()
     return QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
 }
 
+/// A default-constructed QString binds as SQL NULL; NOT NULL columns need an
+/// explicit empty string instead.
+QVariant nonNull(const QString &value)
+{
+    return value.isNull() ? QVariant(QString::fromLatin1("")) : QVariant(value);
+}
+
 } // namespace
 
 WorkspaceStore::WorkspaceStore()
@@ -89,93 +96,128 @@ bool WorkspaceStore::migrate()
         return false;
     }
     query.next();
-    const int version = query.value(0).toInt();
+    int version = query.value(0).toInt();
 
-    if (version >= 1)
+    if (version >= 2)
         return true;
-
-    const QStringList statements = {
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS documents ("
-            " id TEXT PRIMARY KEY,"
-            " title TEXT NOT NULL DEFAULT '',"
-            " revision INTEGER NOT NULL DEFAULT 0,"
-            " created_at TEXT NOT NULL,"
-            " updated_at TEXT NOT NULL,"
-            " cloud_id TEXT,"
-            " cloud_state TEXT NOT NULL DEFAULT 'local',"
-            " trashed_at TEXT)"),
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS media ("
-            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            " sha256 TEXT NOT NULL UNIQUE,"
-            " filename TEXT NOT NULL,"
-            " mime_type TEXT NOT NULL,"
-            " byte_size INTEGER NOT NULL,"
-            " created_at TEXT NOT NULL)"),
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS blocks ("
-            " id TEXT PRIMARY KEY,"
-            " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
-            " position INTEGER NOT NULL,"
-            " block_type TEXT NOT NULL,"
-            " content TEXT NOT NULL DEFAULT '',"
-            " metadata TEXT NOT NULL DEFAULT '{}',"
-            " media_id INTEGER REFERENCES media(id) ON DELETE SET NULL,"
-            " revision INTEGER NOT NULL DEFAULT 1)"),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_blocks_document"
-                       " ON blocks(document_id, position)"),
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS revisions ("
-            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
-            " block_id TEXT NOT NULL,"
-            " event TEXT NOT NULL,"
-            " source TEXT NOT NULL DEFAULT 'local',"
-            " content TEXT,"
-            " block_type TEXT,"
-            " metadata TEXT,"
-            " created_at TEXT NOT NULL)"),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_revisions_document"
-                       " ON revisions(document_id, block_id, created_at)"),
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS media_versions ("
-            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            " block_id TEXT NOT NULL,"
-            " media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,"
-            " created_at TEXT NOT NULL)"),
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS pending_operations ("
-            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            " document_id TEXT NOT NULL,"
-            " operation_id TEXT NOT NULL UNIQUE,"
-            " kind TEXT NOT NULL,"
-            " payload TEXT NOT NULL,"
-            " created_at TEXT NOT NULL,"
-            " state TEXT NOT NULL DEFAULT 'pending')"),
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS settings ("
-            " key TEXT PRIMARY KEY,"
-            " value TEXT NOT NULL)"),
-    };
 
     if (!m_database.transaction()) {
         m_lastError = m_database.lastError().text();
         return false;
     }
 
-    for (const QString &statement : statements) {
-        if (!query.exec(statement)) {
+    if (version < 1) {
+        const QStringList statements = {
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS documents ("
+                " id TEXT PRIMARY KEY,"
+                " title TEXT NOT NULL DEFAULT '',"
+                " revision INTEGER NOT NULL DEFAULT 0,"
+                " created_at TEXT NOT NULL,"
+                " updated_at TEXT NOT NULL,"
+                " cloud_id TEXT,"
+                " cloud_state TEXT NOT NULL DEFAULT 'local',"
+                " trashed_at TEXT)"),
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS media ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " sha256 TEXT NOT NULL UNIQUE,"
+                " filename TEXT NOT NULL,"
+                " mime_type TEXT NOT NULL,"
+                " byte_size INTEGER NOT NULL,"
+                " created_at TEXT NOT NULL)"),
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS blocks ("
+                " id TEXT PRIMARY KEY,"
+                " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+                " position INTEGER NOT NULL,"
+                " block_type TEXT NOT NULL,"
+                " content TEXT NOT NULL DEFAULT '',"
+                " metadata TEXT NOT NULL DEFAULT '{}',"
+                " media_id INTEGER REFERENCES media(id) ON DELETE SET NULL,"
+                " revision INTEGER NOT NULL DEFAULT 1)"),
+            QStringLiteral("CREATE INDEX IF NOT EXISTS idx_blocks_document"
+                           " ON blocks(document_id, position)"),
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS revisions ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+                " block_id TEXT NOT NULL,"
+                " event TEXT NOT NULL,"
+                " source TEXT NOT NULL DEFAULT 'local',"
+                " content TEXT,"
+                " block_type TEXT,"
+                " metadata TEXT,"
+                " created_at TEXT NOT NULL)"),
+            QStringLiteral("CREATE INDEX IF NOT EXISTS idx_revisions_document"
+                           " ON revisions(document_id, block_id, created_at)"),
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS media_versions ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " block_id TEXT NOT NULL,"
+                " media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,"
+                " created_at TEXT NOT NULL)"),
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS pending_operations ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " document_id TEXT NOT NULL,"
+                " operation_id TEXT NOT NULL UNIQUE,"
+                " kind TEXT NOT NULL,"
+                " payload TEXT NOT NULL,"
+                " created_at TEXT NOT NULL,"
+                " state TEXT NOT NULL DEFAULT 'pending')"),
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS settings ("
+                " key TEXT PRIMARY KEY,"
+                " value TEXT NOT NULL)"),
+        };
+        for (const QString &statement : statements) {
+            if (!query.exec(statement)) {
+                m_lastError = query.lastError().text();
+                m_database.rollback();
+                return false;
+            }
+        }
+        if (!query.exec(QStringLiteral("PRAGMA user_version = 1"))) {
             m_lastError = query.lastError().text();
             m_database.rollback();
             return false;
         }
+        version = 1;
     }
 
-    if (!query.exec(QStringLiteral("PRAGMA user_version = 1"))) {
-        m_lastError = query.lastError().text();
-        m_database.rollback();
-        return false;
+    if (version < 2) {
+        const QStringList statements = {
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS ai_results ("
+                " id TEXT PRIMARY KEY,"
+                " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+                " block_id TEXT NOT NULL,"
+                " kind TEXT NOT NULL,"
+                " provider_id TEXT NOT NULL DEFAULT '',"
+                " model TEXT NOT NULL DEFAULT '',"
+                " prompt TEXT NOT NULL DEFAULT '',"
+                " status TEXT NOT NULL DEFAULT 'pending',"
+                " content TEXT NOT NULL DEFAULT '',"
+                " error TEXT NOT NULL DEFAULT '',"
+                " base_revision INTEGER NOT NULL DEFAULT 0,"
+                " batch_id TEXT NOT NULL DEFAULT '',"
+                " created_at TEXT NOT NULL)"),
+            QStringLiteral("CREATE INDEX IF NOT EXISTS idx_ai_results_block"
+                           " ON ai_results(document_id, block_id, created_at)"),
+        };
+        for (const QString &statement : statements) {
+            if (!query.exec(statement)) {
+                m_lastError = query.lastError().text();
+                m_database.rollback();
+                return false;
+            }
+        }
+        if (!query.exec(QStringLiteral("PRAGMA user_version = 2"))) {
+            m_lastError = query.lastError().text();
+            m_database.rollback();
+            return false;
+        }
     }
 
     if (!m_database.commit()) {
@@ -666,6 +708,99 @@ QVector<qint64> WorkspaceStore::mediaVersions(const QString &blockId) const
     while (query.next())
         result.append(query.value(0).toLongLong());
     return result;
+}
+
+bool WorkspaceStore::saveAiResult(const AiResultRecord &result)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO ai_results (id, document_id, block_id, kind, provider_id, model, prompt,"
+        " status, content, error, base_revision, batch_id, created_at)"
+        " VALUES (:id, :document_id, :block_id, :kind, :provider_id, :model, :prompt, :status,"
+        " :content, :error, :base_revision, :batch_id, :created_at)"
+        " ON CONFLICT(id) DO UPDATE SET status = :status, content = :content, error = :error"));
+    query.bindValue(QStringLiteral(":id"), result.id);
+    query.bindValue(QStringLiteral(":document_id"), result.documentId);
+    query.bindValue(QStringLiteral(":block_id"), nonNull(result.blockId));
+    query.bindValue(QStringLiteral(":kind"), result.kind);
+    query.bindValue(QStringLiteral(":provider_id"), nonNull(result.providerId));
+    query.bindValue(QStringLiteral(":model"), nonNull(result.model));
+    query.bindValue(QStringLiteral(":prompt"), nonNull(result.prompt));
+    query.bindValue(QStringLiteral(":status"), result.status);
+    query.bindValue(QStringLiteral(":content"), nonNull(result.content));
+    query.bindValue(QStringLiteral(":error"), nonNull(result.error));
+    query.bindValue(QStringLiteral(":base_revision"), result.baseRevision);
+    query.bindValue(QStringLiteral(":batch_id"), nonNull(result.batchId));
+    query.bindValue(QStringLiteral(":created_at"),
+                    result.createdAt.isValid() ? result.createdAt.toString(Qt::ISODateWithMs)
+                                               : nowIso());
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+QVector<WorkspaceStore::AiResultRecord> WorkspaceStore::aiResults(const QString &documentId,
+                                                                  const QString &blockId,
+                                                                  int limit)
+{
+    QVector<AiResultRecord> result;
+    QSqlQuery query(m_database);
+    QString sql = QStringLiteral(
+        "SELECT id, document_id, block_id, kind, provider_id, model, prompt, status, content,"
+        " error, base_revision, batch_id, created_at FROM ai_results"
+        " WHERE document_id = :document_id");
+    if (!blockId.isEmpty())
+        sql += QStringLiteral(" AND block_id = :block_id");
+    sql += QStringLiteral(" ORDER BY created_at DESC, rowid DESC LIMIT :limit");
+
+    query.prepare(sql);
+    query.bindValue(QStringLiteral(":document_id"), documentId);
+    if (!blockId.isEmpty())
+        query.bindValue(QStringLiteral(":block_id"), blockId);
+    query.bindValue(QStringLiteral(":limit"), limit);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return result;
+    }
+
+    while (query.next()) {
+        AiResultRecord record;
+        record.id = query.value(0).toString();
+        record.documentId = query.value(1).toString();
+        record.blockId = query.value(2).toString();
+        record.kind = query.value(3).toString();
+        record.providerId = query.value(4).toString();
+        record.model = query.value(5).toString();
+        record.prompt = query.value(6).toString();
+        record.status = query.value(7).toString();
+        record.content = query.value(8).toString();
+        record.error = query.value(9).toString();
+        record.baseRevision = query.value(10).toInt();
+        record.batchId = query.value(11).toString();
+        record.createdAt = QDateTime::fromString(query.value(12).toString(), Qt::ISODateWithMs);
+        result.append(record);
+    }
+    return result;
+}
+
+bool WorkspaceStore::updateAiResult(const QString &resultId, const QString &status,
+                                    const QString &content, const QString &error)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "UPDATE ai_results SET status = :status, content = :content, error = :error"
+        " WHERE id = :id"));
+    query.bindValue(QStringLiteral(":status"), status);
+    query.bindValue(QStringLiteral(":content"), nonNull(content));
+    query.bindValue(QStringLiteral(":error"), nonNull(error));
+    query.bindValue(QStringLiteral(":id"), resultId);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
 }
 
 QString WorkspaceStore::setting(const QString &key, const QString &fallback) const

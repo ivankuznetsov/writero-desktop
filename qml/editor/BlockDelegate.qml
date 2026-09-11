@@ -35,6 +35,7 @@ Item {
     signal typeRequested(int index, string typeKey, string level)
     signal attachRequested(int index, string source)
     signal languageRequested(int index, string language)
+    signal aiRequested(int index)
 
     readonly property alias inputItem: input
     readonly property var controller: ListView.view ? ListView.view.controller : null
@@ -309,6 +310,17 @@ Item {
             ToolTip.text: qsTr("Add block below")
             ToolTip.visible: hovered
             onClicked: delegate.requestInsertAfter(delegate.index)
+        }
+
+        ToolButton {
+            width: 30
+            height: 28
+            visible: delegate.blockType !== "divider"
+            text: "\u2728"
+            display: AbstractButton.TextOnly
+            ToolTip.text: qsTr("AI tools for this block")
+            ToolTip.visible: hovered
+            onClicked: delegate.aiRequested(delegate.index)
         }
 
         ToolButton {

@@ -39,9 +39,21 @@ ApplicationWindow {
         workspace: workspace
     }
 
+    AiController {
+        id: ai
+        workspace: workspace
+        providers: providers
+        document: document
+    }
+
     Providers {
         id: providersDialog
         registry: providers
+    }
+
+    AiPanel {
+        id: aiPanel
+        ai: ai
     }
 
     Connections {
@@ -241,6 +253,11 @@ ApplicationWindow {
                 id: editor
                 anchors.fill: parent
                 controller: document
+
+                onAiRequested: (index) => {
+                    ai.setCurrentBlock(index)
+                    aiPanel.open()
+                }
             }
         }
     }

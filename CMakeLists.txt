@@ -34,6 +34,8 @@ add_library(writero_core STATIC
     src/ai/aiclient.cpp
     src/ai/providerprofile.h
     src/ai/providerprofile.cpp
+    src/ai/textactions.h
+    src/ai/textactions.cpp
     src/core/AppInfo.h
     src/core/AppInfo.cpp
     src/document/block.h
@@ -77,6 +79,8 @@ target_compile_definitions(writero_core PUBLIC WRITERO_VERSION="${PROJECT_VERSIO
 # application and the Qt Quick tests load the same components. The controller
 # and list model are part of the module because they are exposed to QML.
 add_library(writero_ui STATIC
+    src/ai/aicontroller.h
+    src/ai/aicontroller.cpp
     src/ai/providerregistry.h
     src/ai/providerregistry.cpp
     src/editor/blocklistmodel.h
@@ -103,6 +107,7 @@ qt_add_qml_module(writero_ui
     URI Writero
     VERSION 0.1
     SOURCES
+        src/ai/aicontroller.h
         src/ai/providerregistry.h
         src/editor/blocklistmodel.h
         src/editor/documentcontroller.h
@@ -111,6 +116,7 @@ qt_add_qml_module(writero_ui
     QML_FILES
         qml/Main.qml
         qml/Theme.qml
+        qml/ai/AiPanel.qml
         qml/editor/BlockDelegate.qml
         qml/editor/BlockEditor.qml
         qml/editor/SlashMenu.qml
