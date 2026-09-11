@@ -1,6 +1,9 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QQmlComponent>
 #include <QQmlError>
+
+#include <cstdio>
 
 #include "core/AppInfo.h"
 
@@ -25,6 +28,12 @@ int main(int argc, char *argv[])
         []() { QCoreApplication::exit(1); }, Qt::QueuedConnection);
 
     engine.loadFromModule("Writero", "Main");
+
+    if (engine.rootObjects().isEmpty()) {
+        QQmlComponent component(&engine, QStringLiteral("Writero"), QStringLiteral("Main"));
+        for (const QQmlError &error : component.errors())
+            std::fprintf(stderr, "QML error: %s\n", qPrintable(error.toString()));
+    }
 
     return app.exec();
 }

@@ -34,6 +34,16 @@ ApplicationWindow {
         workspace: workspace
     }
 
+    ProviderRegistry {
+        id: providers
+        workspace: workspace
+    }
+
+    Providers {
+        id: providersDialog
+        registry: providers
+    }
+
     Connections {
         target: document
         function onLoaded() {
@@ -134,6 +144,14 @@ ApplicationWindow {
 
             Item {
                 Layout.fillWidth: true
+            }
+
+            ToolButton {
+                text: "\u2699"
+                display: AbstractButton.TextOnly
+                ToolTip.text: qsTr("AI providers")
+                ToolTip.visible: hovered
+                onClicked: providersDialog.open()
             }
 
             ToolButton {

@@ -22,9 +22,18 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Sql
     Svg)
 
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBSECRET IMPORTED_TARGET libsecret-1)
+endif()
+
 qt_standard_project_setup(REQUIRES 6.5)
 
 add_library(writero_core STATIC
+    src/ai/aiclient.h
+    src/ai/aiclient.cpp
+    src/ai/providerprofile.h
+    src/ai/providerprofile.cpp
     src/core/AppInfo.h
     src/core/AppInfo.cpp
     src/document/block.h
@@ -42,6 +51,8 @@ add_library(writero_core STATIC
     src/document/documentio.cpp
     src/markdown/markdown.h
     src/markdown/markdown.cpp
+    src/security/credentialstore.h
+    src/security/credentialstore.cpp
     src/storage/mediastore.h
     src/storage/mediastore.cpp
     src/storage/revision.h
@@ -56,12 +67,18 @@ target_link_libraries(writero_core PUBLIC
     Qt6::Qml
     Qt6::Sql
 )
+if(LIBSECRET_FOUND)
+    target_link_libraries(writero_core PUBLIC PkgConfig::LIBSECRET)
+    target_compile_definitions(writero_core PUBLIC WRITERO_HAVE_LIBSECRET)
+endif()
 target_compile_definitions(writero_core PUBLIC WRITERO_VERSION="${PROJECT_VERSION}")
 
 # The QML user interface lives in a static library so that both the
 # application and the Qt Quick tests load the same components. The controller
 # and list model are part of the module because they are exposed to QML.
 add_library(writero_ui STATIC
+    src/ai/providerregistry.h
+    src/ai/providerregistry.cpp
     src/editor/blocklistmodel.h
     src/editor/blocklistmodel.cpp
     src/editor/documentcontroller.h
@@ -75,6 +92,7 @@ add_library(writero_ui STATIC
 )
 target_link_libraries(writero_ui PUBLIC writero_core)
 target_include_directories(writero_ui PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ai
     ${CMAKE_CURRENT_SOURCE_DIR}/src/editor
     ${CMAKE_CURRENT_SOURCE_DIR}/src/storage
 )
@@ -85,6 +103,7 @@ qt_add_qml_module(writero_ui
     URI Writero
     VERSION 0.1
     SOURCES
+        src/ai/providerregistry.h
         src/editor/blocklistmodel.h
         src/editor/documentcontroller.h
         src/editor/documentlibrarymodel.h
@@ -96,6 +115,7 @@ qt_add_qml_module(writero_ui
         qml/editor/BlockEditor.qml
         qml/editor/SlashMenu.qml
         qml/library/DocumentSidebar.qml
+        qml/settings/Providers.qml
 )
 
 qt_add_executable(writero-desktop
