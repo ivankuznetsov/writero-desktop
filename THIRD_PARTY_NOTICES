@@ -1,0 +1,42 @@
+# Third-party notices
+
+Writero Desktop is MIT licensed (see `LICENSE`). It links against the
+following third-party components. This file is a pointer inventory, not a
+replacement for the full license texts, which ship with each package.
+
+## Qt 6
+
+- Modules used: Core, Gui, Network, Qml, Quick, QuickControls2, Sql, Svg,
+  and (tests only) Test, QuickTest.
+- License: LGPL-3.0-only / GPL-3.0-only, module-dependent. Qt WebEngine and
+  other GPL-only modules are not used. See <https://doc.qt.io/qt-6/licensing.html>.
+- The application links Qt dynamically and relies on the system Qt libraries,
+  preserving the LGPL relinking rights.
+
+## SQLite
+
+- Public domain.
+- Used through Qt's `QSQLITE` driver for the local workspace database.
+
+## libsecret
+
+- License: LGPL-2.1-or-later.
+- Used to store provider API keys in the Secret Service. When unavailable,
+  credentials are session-only and never written to disk.
+
+## Fonts
+
+Qt resolves UI text through the system font database. If the interface style
+specifies a monospace family it only requests an installed family by name
+(see `Theme.qml`); no font files are bundled.
+
+## Prompts
+
+All AI prompt templates in `src/ai/textactions.cpp` are original text written
+for this project from behavioral descriptions of the Writero web app. No
+upstream prompt text is copied.
+
+## Bundled assets
+
+`packaging/app.writero.Writero.svg` is original artwork created for this
+project under the repository license.

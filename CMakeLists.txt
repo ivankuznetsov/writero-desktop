@@ -132,6 +132,14 @@ target_link_libraries(writero-desktop PRIVATE
     writero_uiplugin
 )
 
+install(TARGETS writero-desktop RUNTIME DESTINATION bin)
+install(FILES packaging/writero.desktop
+    DESTINATION share/applications
+    RENAME app.writero.Writero.desktop)
+install(FILES packaging/app.writero.Writero.svg
+    DESTINATION share/icons/hicolor/scalable/apps
+    RENAME app.writero.Writero.svg)
+
 if(WRITERO_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

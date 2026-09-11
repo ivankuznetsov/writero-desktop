@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Writero
+Comment=Native block editor with AI writing tools
+Exec=writero-desktop %U
+Icon=app.writero.Writero
+Terminal=false
+Categories=Office;WordProcessor;TextEditor;
+Keywords=writing;editor;markdown;notes;ai;
+StartupNotify=true
+StartupWMClass=app.writero.Writero

@@ -18,13 +18,20 @@ Implemented so far:
 
 - [x] U1 — Native project foundation and editor feasibility gate
 - [x] U2 — Durable local documents, media, and revision storage
-- [ ] U3 — Complete block editing and document navigation
-- [ ] U4 — Native import/export and media history
-- [ ] U5 — Provider connections and local AI execution
-- [ ] U6 — AI text and result-review parity
-- [ ] U7 — Research and AI media parity
-- [ ] U8–U12 — Writero service API and sync (service-side work)
-- [ ] U13 — Open-source packaging and Omarchy acceptance
+- [x] U3 — Complete block editing and document navigation
+- [x] U4 — Native import/export and media history
+- [x] U5 — Provider connections and local AI execution
+- [x] U6 — AI text and result-review parity
+- [ ] U7 — Research and AI media parity (on-demand research, image
+  generation, and image explanation work; scheduled research is not built yet)
+- [ ] U8–U12 — Writero service API and sync (service-side work in the
+  Writero Rails repository)
+- [x] U13 — Open-source packaging and Omarchy acceptance artifacts
+
+The remaining work is the cloud phase described in the plan: the structured
+`/api/desktop/v1` service, OAuth account connection, change-log sync and
+conflict resolution, and hosted AI credits. Those units change the Writero
+service and are not part of this repository.
 
 ## Building
 

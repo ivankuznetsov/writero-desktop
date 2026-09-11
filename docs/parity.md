@@ -60,7 +60,12 @@ paragraphs. Native import/export implements the same mapping in U4.
 
 | Milestone | Evidence |
 |---|---|
-| U1 | `tests/document/tst_document.cpp`, `tests/ui/tst_native_editor.qml`, screenshot `docs/verification.md` |
-| U2 | storage/recovery tests |
-| U3 | block editing QML tests |
-| U4 | Markdown round-trip fixtures |
+| U1 | `tests/document/tst_document.cpp`, `tests/ui/tst_native_editor.qml` |
+| U2 | `tests/storage/tst_workspacestore.cpp`, `tst_workspace.cpp` |
+| U3 | `tst_ui` editing interactions, `tst_documentcontroller` |
+| U4 | `tests/markdown/tst_markdown.cpp`, `tests/document/tst_documentio.cpp`, media history restore in `tst_workspace.cpp` |
+| U5 | `tests/ai/tst_aiclient.cpp` (stub server), `tst_providerregistry.cpp` |
+| U6 | `tests/ai/tst_textactions.cpp`, `tst_aicontroller.cpp` |
+| U7 | on-demand research and image operations in `tst_aicontroller.cpp`; scheduled research remains open |
+| U8–U12 | not implemented; service-side work in the Writero repository |
+| U13 | `docs/verification.md`, `packaging/`, install rules in `CMakeLists.txt` |
