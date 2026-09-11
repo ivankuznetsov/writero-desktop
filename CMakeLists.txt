@@ -38,6 +38,10 @@ add_library(writero_core STATIC
     src/document/documentsession.cpp
     src/document/listcontent.h
     src/document/listcontent.cpp
+    src/document/documentio.h
+    src/document/documentio.cpp
+    src/markdown/markdown.h
+    src/markdown/markdown.cpp
     src/storage/mediastore.h
     src/storage/mediastore.cpp
     src/storage/revision.h

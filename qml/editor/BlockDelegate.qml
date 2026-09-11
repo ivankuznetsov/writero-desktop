@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
+import QtQuick.Layouts
 
 import Writero
 
@@ -36,6 +37,7 @@ Item {
     signal languageRequested(int index, string language)
 
     readonly property alias inputItem: input
+    readonly property var controller: ListView.view ? ListView.view.controller : null
 
     width: ListView.view ? ListView.view.width : 0
     implicitHeight: blockBody.height + Theme.blockPaddingV * 2
@@ -312,6 +314,16 @@ Item {
         ToolButton {
             width: 30
             height: 28
+            text: "\u25F4"
+            display: AbstractButton.TextOnly
+            ToolTip.text: qsTr("Block history")
+            ToolTip.visible: hovered
+            onClicked: historyDialog.openForBlock(delegate.index)
+        }
+
+        ToolButton {
+            width: 30
+            height: 28
             text: "\u22EF"
             display: AbstractButton.TextOnly
             ToolTip.text: qsTr("More block actions")
@@ -413,6 +425,7 @@ Item {
             selectByMouse: true
             persistentSelection: true
             textFormat: TextEdit.PlainText
+            background: null
             height: Math.max(contentHeight, Theme.blockMinHeight)
             font.pixelSize: delegate.blockType === "heading"
                              ? Theme.headingPixelSize(delegate.headingLevel)
@@ -508,6 +521,128 @@ Item {
     }
 
     Popup {
+        id: historyDialog
+        objectName: "historyDialog"
+        modal: true
+        focus: true
+        width: 420
+        height: 440
+        x: Math.round((delegate.width - width) / 2)
+        y: 12
+
+        property var revisions: []
+        property var mediaVersions: []
+
+        function openForBlock(blockIndex) {
+            revisions = delegate.controller.blockRevisions(blockIndex)
+            mediaVersions = delegate.controller.blockMediaVersions(blockIndex)
+            open()
+        }
+
+        background: Rectangle {
+            color: Theme.surface
+            border.color: Theme.border
+            radius: Theme.radius
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 6
+
+            Label {
+                text: qsTr("Media history")
+                visible: historyDialog.mediaVersions.length > 0
+                color: Theme.textMuted
+                font.bold: true
+            }
+
+            Repeater {
+                model: historyDialog.mediaVersions
+                delegate: RowLayout {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: modelData.filename
+                        color: Theme.text
+                        elide: Text.ElideMiddle
+                    }
+
+                    Button {
+                        text: qsTr("Restore")
+                        onClicked: {
+                            delegate.controller.restoreMediaVersion(delegate.index,
+                                                                         modelData.mediaId)
+                            historyDialog.openForBlock(delegate.index)
+                        }
+                    }
+                }
+            }
+
+            Label {
+                text: qsTr("Content history")
+                color: Theme.textMuted
+                font.bold: true
+            }
+
+            ListView {
+                id: revisionsList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                model: historyDialog.revisions
+                ScrollBar.vertical: ScrollBar {}
+
+                delegate: RowLayout {
+                    required property var modelData
+                    width: revisionsList.width
+                    spacing: 6
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+
+                        Label {
+                            text: {
+                                const content = modelData.content || ""
+                                return content.length > 80 ? content.left(79) + "\u2026" : content
+                            }
+                            color: Theme.text
+                            elide: Text.ElideRight
+                        }
+
+                        Label {
+                            text: (modelData.event || "") + "  " + (modelData.source || "")
+                                  + "  " + Qt.formatDateTime(modelData.createdAt, "yyyy-MM-dd HH:mm")
+                            color: Theme.textFaint
+                            font.pixelSize: 11
+                        }
+                    }
+
+                    Button {
+                        text: qsTr("Restore")
+                        onClicked: {
+                            delegate.controller.restoreRevision(delegate.index,
+                                                                     modelData.id)
+                            historyDialog.openForBlock(delegate.index)
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+
+                Button {
+                    text: qsTr("Close")
+                    onClicked: historyDialog.close()
+                }
+            }
+        }
+    }
+
+    Popup {
         id: linkDialog
         objectName: "linkDialog"
         modal: true
@@ -563,7 +698,7 @@ Item {
                 return
             if (!/^https?:\/\//.test(url))
                 url = "https://" + url
-            const result = ListView.view.controller.applyLink(delegate.index,
+            const result = delegate.controller.applyLink(delegate.index,
                                                               input.selectionStart,
                                                               input.selectionEnd, url)
             delegate.applySelectionResult(result)
@@ -572,7 +707,7 @@ Item {
     }
 
     function applyFormat(style) {
-        const result = ListView.view.controller.applyFormat(delegate.index,
+        const result = delegate.controller.applyFormat(delegate.index,
                                                             input.selectionStart,
                                                             input.selectionEnd, style)
         delegate.applySelectionResult(result)
@@ -597,7 +732,7 @@ Item {
         } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
             const outdent = event.key === Qt.Key_Backtab || shift
             if (delegate.blockType === "ul" || delegate.blockType === "ol") {
-                const position = ListView.view.controller.indentListItem(delegate.index,
+                const position = delegate.controller.indentListItem(delegate.index,
                                                                          input.cursorPosition,
                                                                          outdent)
                 if (position >= 0) {
@@ -624,6 +759,13 @@ Item {
                    && delegate.index < ListView.view.count - 1) {
             ListView.view.editBlock(delegate.index + 1, 0)
             event.accepted = true
+        } else if (ctrl && event.key === Qt.Key_V) {
+            const clipboard = delegate.controller.clipboardText()
+            if (input.text === "" && delegate.controller.looksLikeMarkdown(clipboard)
+                && delegate.controller.pasteMarkdown(delegate.index, clipboard)) {
+                input.cursorPosition = input.text.length
+                event.accepted = true
+            }
         } else if (event.key === Qt.Key_Slash && input.text === ""
                    && delegate.blockType !== "code") {
             delegate.requestSlashMenu(delegate.index)
@@ -638,7 +780,7 @@ Item {
             return
         }
         if (delegate.blockType === "ul" || delegate.blockType === "ol") {
-            const position = ListView.view.controller.handleListEnter(delegate.index,
+            const position = delegate.controller.handleListEnter(delegate.index,
                                                                       input.cursorPosition)
             if (position >= 0) {
                 input.cursorPosition = position

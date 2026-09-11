@@ -558,6 +558,31 @@ bool WorkspaceStore::pruneRevisions(const QString &documentId, const QString &bl
     return true;
 }
 
+bool WorkspaceStore::insertRevision(const QString &documentId, const Revision &revision)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO revisions (document_id, block_id, event, source, content, block_type,"
+        " metadata, created_at) VALUES (:document_id, :block_id, :event, :source, :content,"
+        " :block_type, :metadata, :created_at)"));
+    query.bindValue(QStringLiteral(":document_id"), documentId);
+    query.bindValue(QStringLiteral(":block_id"), revision.blockId);
+    query.bindValue(QStringLiteral(":event"), revision.event);
+    query.bindValue(QStringLiteral(":source"), revision.source);
+    query.bindValue(QStringLiteral(":content"), revision.content);
+    query.bindValue(QStringLiteral(":block_type"), blocktype::toKey(revision.type));
+    query.bindValue(QStringLiteral(":metadata"), toJson(revision.metadata));
+    query.bindValue(QStringLiteral(":created_at"),
+                    revision.createdAt.isValid()
+                        ? revision.createdAt.toString(Qt::ISODateWithMs)
+                        : nowIso());
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 qint64 WorkspaceStore::ensureMedia(const QString &sha256, const QString &filename,
                                    const QString &mimeType, qint64 byteSize)
 {

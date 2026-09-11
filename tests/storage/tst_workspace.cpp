@@ -126,6 +126,89 @@ private slots:
                  QStringLiteral("autosaved text"));
     }
 
+    void bundleExportImportKeepsMediaAndHistory()
+    {
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+
+        DocumentController controller;
+        controller.setWorkspace(&workspace);
+        const QString id = controller.createDocument(QStringLiteral("Portable"));
+        controller.setBlockContent(0, QStringLiteral("body text"));
+
+        const QString imagePath = dir.filePath(QStringLiteral("pixel.png"));
+        QFile image(imagePath);
+        QVERIFY(image.open(QIODevice::WriteOnly));
+        image.write(QByteArray("\x89PNG\r\n\x1a\nfake", 12));
+        image.close();
+        QVERIFY(controller.attachMedia(0, imagePath));
+        QVERIFY(controller.saveIfDirty());
+
+        const QString bundlePath = dir.filePath(QStringLiteral("portable.writero"));
+        QCOMPARE(controller.exportBundle(bundlePath), id);
+
+        const QString importedId = controller.importBundle(bundlePath);
+        QVERIFY2(!importedId.isEmpty(), qPrintable(controller.saveError()));
+        QVERIFY(importedId != id);
+        QCOMPARE(controller.title(), QStringLiteral("Portable"));
+        QCOMPARE(controller.blocks()->rowCount(), 2);
+        const QVariantMap mediaBlock = controller.blocks()->get(0);
+        QCOMPARE(mediaBlock.value(QStringLiteral("blockType")).toString(),
+                 QStringLiteral("media"));
+        QVERIFY(mediaBlock.value(QStringLiteral("mediaId")).toLongLong() > 0);
+        QVERIFY(!workspace.mediaPath(mediaBlock.value(QStringLiteral("mediaId")).toLongLong())
+                     .isEmpty());
+        QCOMPARE(workspace.documents()->rowCount(), 2);
+    }
+
+    void markdownImportReplacesBlocks()
+    {
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+
+        DocumentController controller;
+        controller.setWorkspace(&workspace);
+        controller.createDocument(QStringLiteral("Import target"));
+
+        const QString path = dir.filePath(QStringLiteral("article.md"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("# Imported\n\nHello world.\n\n- one\n- two\n");
+        file.close();
+
+        QVERIFY2(controller.importMarkdownFile(path), qPrintable(controller.saveError()));
+        QCOMPARE(controller.blocks()->get(0).value(QStringLiteral("blockType")).toString(),
+                 QStringLiteral("heading"));
+        QCOMPARE(controller.blocks()->get(0).value(QStringLiteral("content")).toString(),
+                 QStringLiteral("Imported"));
+        QVERIFY(controller.blocks()->rowCount() >= 4); // heading, text, list, placeholder
+        QVERIFY(controller.saveIfDirty());
+    }
+
+    void historyRestoresPreviousContent()
+    {
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+
+        DocumentController controller;
+        controller.setWorkspace(&workspace);
+        controller.createDocument(QStringLiteral("History"));
+        controller.setBlockContent(0, QStringLiteral("first"));
+        QVERIFY(controller.saveIfDirty());
+        controller.setBlockContent(0, QStringLiteral("second"));
+        QVERIFY(controller.saveIfDirty());
+
+        const QVariantList revisions = controller.blockRevisions(0);
+        QVERIFY(revisions.size() >= 2);
+        const qint64 firstId = revisions.last().toMap().value(QStringLiteral("id")).toLongLong();
+        QVERIFY(controller.restoreRevision(0, firstId));
+        QCOMPARE(controller.blocks()->get(0).value(QStringLiteral("content")).toString(),
+                 QStringLiteral("first"));
+    }
+
     void importedMediaResolvesToAFilePath()
     {
         QTemporaryDir dir;

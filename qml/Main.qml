@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 
 import Writero
@@ -136,6 +137,44 @@ ApplicationWindow {
             }
 
             ToolButton {
+                text: "\u22EF"
+                display: AbstractButton.TextOnly
+                ToolTip.text: qsTr("Document actions")
+                ToolTip.visible: hovered
+                onClicked: documentMenu.popup()
+
+                Menu {
+                    id: documentMenu
+
+                    MenuItem {
+                        text: qsTr("Export Markdown\u2026")
+                        onTriggered: exportMarkdownDialog.open()
+                    }
+                    MenuItem {
+                        text: qsTr("Export HTML\u2026")
+                        onTriggered: exportHtmlDialog.open()
+                    }
+                    MenuItem {
+                        text: qsTr("Export PDF\u2026")
+                        onTriggered: exportPdfDialog.open()
+                    }
+                    MenuSeparator {}
+                    MenuItem {
+                        text: qsTr("Export bundle\u2026")
+                        onTriggered: exportBundleDialog.open()
+                    }
+                    MenuItem {
+                        text: qsTr("Import Markdown\u2026")
+                        onTriggered: importMarkdownDialog.open()
+                    }
+                    MenuItem {
+                        text: qsTr("Import bundle\u2026")
+                        onTriggered: importBundleDialog.open()
+                    }
+                }
+            }
+
+            ToolButton {
                 text: "\u21B6"
                 enabled: document.canUndo
                 onClicked: document.undo()
@@ -186,6 +225,53 @@ ApplicationWindow {
                 controller: document
             }
         }
+    }
+
+    FileDialog {
+        id: exportMarkdownDialog
+        title: qsTr("Export Markdown")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "md"
+        nameFilters: [qsTr("Markdown (*.md)")]
+        onAccepted: document.exportDocument(selectedFile.toString(), "md")
+    }
+
+    FileDialog {
+        id: exportHtmlDialog
+        title: qsTr("Export HTML")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "html"
+        nameFilters: [qsTr("HTML (*.html)")]
+        onAccepted: document.exportDocument(selectedFile.toString(), "html")
+    }
+
+    FileDialog {
+        id: exportPdfDialog
+        title: qsTr("Export PDF")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "pdf"
+        nameFilters: [qsTr("PDF (*.pdf)")]
+        onAccepted: document.exportDocument(selectedFile.toString(), "pdf")
+    }
+
+    FolderDialog {
+        id: exportBundleDialog
+        title: qsTr("Export bundle to a folder")
+        onAccepted: document.exportBundle(selectedFolder.toString())
+    }
+
+    FileDialog {
+        id: importMarkdownDialog
+        title: qsTr("Import Markdown")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Markdown (*.md *.markdown)"), qsTr("All files (*)")]
+        onAccepted: document.importMarkdownFile(selectedFile.toString())
+    }
+
+    FolderDialog {
+        id: importBundleDialog
+        title: qsTr("Choose a bundle folder")
+        onAccepted: document.importBundle(selectedFolder.toString())
     }
 
     footer: ToolBar {

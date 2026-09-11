@@ -4,6 +4,7 @@
 #include <QQmlEngine>
 #include <QString>
 
+#include "document/documentio.h"
 #include "editor/documentlibrarymodel.h"
 #include "storage/mediastore.h"
 #include "storage/workspacestore.h"
@@ -53,6 +54,18 @@ public:
     Q_INVOKABLE qint64 importMedia(const QString &sourcePath);
     Q_INVOKABLE QString mediaPath(qint64 mediaId) const;
     Q_INVOKABLE QString mediaUrl(qint64 mediaId) const;
+
+    /// Media access for document export (Markdown references and embedded bytes).
+    documentio::MediaAccess mediaAccess() const;
+
+    /// Writes/reads a portable directory bundle. Import returns the new
+    /// document id, or an empty string on failure.
+    QString exportBundleTo(const QString &directory, const QString &documentId,
+                           QString *error = nullptr);
+    QString importBundleFrom(const QString &directory, QString *error = nullptr);
+
+    /// Persists a revision read from a bundle (used by bundle import).
+    bool importRevision(const QString &documentId, const Revision &revision);
 
     Q_INVOKABLE QString setting(const QString &key, const QString &fallback = QString()) const;
     Q_INVOKABLE bool setSetting(const QString &key, const QString &value);

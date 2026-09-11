@@ -1,10 +1,14 @@
 #include "editor/documentcontroller.h"
 
+#include "document/documentio.h"
 #include "document/listcontent.h"
 #include "editor/formatactions.h"
+#include "markdown/markdown.h"
 
+#include <QClipboard>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QSet>
 #include <QUrl>
 
@@ -177,6 +181,212 @@ bool DocumentController::attachMedia(int index, const QString &source)
 QString DocumentController::mediaUrl(qint64 mediaId) const
 {
     return m_workspace ? m_workspace->mediaUrl(mediaId) : QString();
+}
+
+bool DocumentController::exportDocument(const QString &path, const QString &format)
+{
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return false;
+
+    const QUrl url(path);
+    const QString localPath = url.isLocalFile() ? url.toLocalFile() : path;
+    const documentio::MediaAccess access = m_workspace->mediaAccess();
+    QString error;
+    bool ok = false;
+    if (format == QLatin1String("md"))
+        ok = documentio::exportMarkdown(m_session.document(), localPath, access, &error);
+    else if (format == QLatin1String("html"))
+        ok = documentio::exportHtml(m_session.document(), localPath, access, &error);
+    else if (format == QLatin1String("pdf"))
+        ok = documentio::exportPdf(m_session.document(), localPath, access, &error);
+    else
+        error = QStringLiteral("Unsupported export format: %1").arg(format);
+
+    if (!ok)
+        setSaveError(error);
+    return ok;
+}
+
+QString DocumentController::exportBundle(const QString &directory)
+{
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return {};
+    const QUrl url(directory);
+    const QString localPath = url.isLocalFile() ? url.toLocalFile() : directory;
+    QString error;
+    const QString result = m_workspace->exportBundleTo(localPath, m_session.id(), &error);
+    if (result.isEmpty())
+        setSaveError(error);
+    return result;
+}
+
+QString DocumentController::importBundle(const QString &directory)
+{
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return {};
+    if (m_session.isDirty())
+        saveIfDirty();
+
+    const QUrl url(directory);
+    const QString localPath = url.isLocalFile() ? url.toLocalFile() : directory;
+    QString error;
+    const QString id = m_workspace->importBundleFrom(localPath, &error);
+    if (id.isEmpty()) {
+        setSaveError(error);
+        return {};
+    }
+    openDocument(id);
+    return id;
+}
+
+bool DocumentController::importMarkdownFile(const QString &path)
+{
+    const QUrl url(path);
+    const QString localPath = url.isLocalFile() ? url.toLocalFile() : path;
+    QString error;
+    const BlockList blocks = documentio::importMarkdownFile(localPath, &error);
+    if (blocks.isEmpty()) {
+        setSaveError(error.isEmpty() ? QStringLiteral("Nothing to import") : error);
+        return false;
+    }
+    m_session.replaceAll(blocks, QStringLiteral("import"));
+    ensureTrailingBlock();
+    return true;
+}
+
+bool DocumentController::pasteMarkdown(int index, const QString &markdown)
+{
+    const auto &blocks = m_session.document().blocks;
+    if (index < 0 || index >= blocks.size())
+        return false;
+
+    BlockList parsed = markdown::parse(markdown);
+    if (parsed.isEmpty())
+        return false;
+
+    Block first = parsed.takeFirst();
+    Block current = blocks.at(index);
+    current.type = first.type;
+    current.content = first.content;
+    current.metadata = first.metadata;
+    if (!m_session.updateBlock(index, current, QStringLiteral("paste")))
+        return false;
+
+    int at = index + 1;
+    for (const Block &block : parsed)
+        m_session.insertBlock(at++, block, QStringLiteral("paste"));
+    return true;
+}
+
+QString DocumentController::clipboardText() const
+{
+    return QGuiApplication::clipboard()->text();
+}
+
+bool DocumentController::looksLikeMarkdown(const QString &text) const
+{
+    return markdown::looksLikeMarkdown(text);
+}
+
+QVariantList DocumentController::blockRevisions(int index) const
+{
+    QVariantList result;
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return result;
+
+    const auto &blocks = m_session.document().blocks;
+    if (index < 0 || index >= blocks.size())
+        return result;
+
+    const QVector<Revision> revisions =
+        m_workspace->store()->revisions(m_session.id(), blocks.at(index).id, 100);
+    for (const Revision &revision : revisions) {
+        result.append(QVariantMap{
+            {QStringLiteral("id"), revision.id},
+            {QStringLiteral("event"), revision.event},
+            {QStringLiteral("source"), revision.source},
+            {QStringLiteral("content"), revision.content},
+            {QStringLiteral("createdAt"), revision.createdAt},
+        });
+    }
+    return result;
+}
+
+QVariantList DocumentController::blockMediaVersions(int index) const
+{
+    QVariantList result;
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return result;
+
+    const auto &blocks = m_session.document().blocks;
+    if (index < 0 || index >= blocks.size())
+        return result;
+
+    const QVector<qint64> versions =
+        m_workspace->store()->mediaVersions(blocks.at(index).id);
+    for (qint64 mediaId : versions) {
+        const WorkspaceStore::MediaRecord record = m_workspace->store()->mediaRecord(mediaId);
+        if (!record.isValid())
+            continue;
+        result.append(QVariantMap{
+            {QStringLiteral("mediaId"), record.id},
+            {QStringLiteral("filename"), record.filename},
+            {QStringLiteral("mimeType"), record.mimeType},
+            {QStringLiteral("url"), m_workspace->mediaUrl(record.id)},
+        });
+    }
+    return result;
+}
+
+bool DocumentController::restoreRevision(int index, qint64 revisionId)
+{
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return false;
+
+    const auto &blocks = m_session.document().blocks;
+    if (index < 0 || index >= blocks.size())
+        return false;
+
+    const QVector<Revision> revisions =
+        m_workspace->store()->revisions(m_session.id(), blocks.at(index).id, 500);
+    for (const Revision &revision : revisions) {
+        if (revision.id != revisionId)
+            continue;
+        Block updated = blocks.at(index);
+        updated.type = revision.type;
+        updated.content = revision.content;
+        updated.metadata = revision.metadata;
+        return m_session.updateBlock(index, updated, QStringLiteral("restore"));
+    }
+    return false;
+}
+
+bool DocumentController::restoreMediaVersion(int index, qint64 mediaId)
+{
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return false;
+
+    const auto &blocks = m_session.document().blocks;
+    if (index < 0 || index >= blocks.size())
+        return false;
+
+    const WorkspaceStore::MediaRecord record = m_workspace->store()->mediaRecord(mediaId);
+    if (!record.isValid())
+        return false;
+
+    Block updated = blocks.at(index);
+    if (updated.mediaId == mediaId)
+        return true;
+    if (updated.mediaId > 0)
+        m_workspace->store()->addMediaVersion(updated.id, updated.mediaId);
+    updated.mediaId = mediaId;
+    updated.type = BlockType::Media;
+    return m_session.updateBlock(index, updated, QStringLiteral("restore"));
+}
+
+void DocumentController::ensureTrailingBlock()
+{
+    m_session.ensureTrailingEmptyBlock(QStringLiteral("import"));
 }
 
 void DocumentController::setTitle(const QString &title)

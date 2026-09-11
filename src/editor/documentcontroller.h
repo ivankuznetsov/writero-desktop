@@ -71,6 +71,21 @@ public:
     /// the block, converting the block to a media block.
     Q_INVOKABLE bool attachMedia(int index, const QString &source);
     Q_INVOKABLE QString mediaUrl(qint64 mediaId) const;
+
+    /// Import/export. `format` is `md`, `html`, or `pdf`.
+    Q_INVOKABLE bool exportDocument(const QString &path, const QString &format);
+    Q_INVOKABLE QString exportBundle(const QString &directory);
+    Q_INVOKABLE QString importBundle(const QString &directory);
+    Q_INVOKABLE bool importMarkdownFile(const QString &path);
+    Q_INVOKABLE bool pasteMarkdown(int index, const QString &markdown);
+    Q_INVOKABLE QString clipboardText() const;
+    Q_INVOKABLE bool looksLikeMarkdown(const QString &text) const;
+
+    /// Block history: content revisions and media versions, newest first.
+    Q_INVOKABLE QVariantList blockRevisions(int index) const;
+    Q_INVOKABLE QVariantList blockMediaVersions(int index) const;
+    Q_INVOKABLE bool restoreRevision(int index, qint64 revisionId);
+    Q_INVOKABLE bool restoreMediaVersion(int index, qint64 mediaId);
     Q_INVOKABLE int insertBlockAfter(int index);
     Q_INVOKABLE int appendBlock();
     Q_INVOKABLE void removeBlock(int index);
@@ -114,6 +129,7 @@ private:
     void connectSession();
     void scheduleAutosave();
     void setSaveError(const QString &error);
+    void ensureTrailingBlock();
 
     DocumentSession m_session;
     BlockListModel m_blocks;

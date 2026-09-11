@@ -2,8 +2,10 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QLockFile>
+#include <QSet>
 #include <QStandardPaths>
 #include <QUrl>
 
@@ -178,6 +180,132 @@ QString Workspace::mediaUrl(qint64 mediaId) const
 {
     const QString path = mediaPath(mediaId);
     return path.isEmpty() ? QString() : QUrl::fromLocalFile(path).toString();
+}
+
+documentio::MediaAccess Workspace::mediaAccess() const
+{
+    documentio::MediaAccess access;
+    access.source = [this](const Block &block) {
+        return block.mediaId > 0 ? mediaPath(block.mediaId) : QString();
+    };
+    access.bytes = [this](const Block &block) {
+        if (block.mediaId <= 0)
+            return QByteArray();
+        QFile file(mediaPath(block.mediaId));
+        if (!file.open(QIODevice::ReadOnly))
+            return QByteArray();
+        return file.readAll();
+    };
+    access.mimeType = [this](const Block &block) {
+        return m_store.mediaRecord(block.mediaId).mimeType;
+    };
+    return access;
+}
+
+QString Workspace::exportBundleTo(const QString &directory, const QString &documentId,
+                                  QString *error)
+{
+    if (!isReady())
+        return {};
+
+    const Document document = m_store.loadDocument(documentId, error);
+    if (document.id.isEmpty())
+        return {};
+
+    documentio::BundleContents contents;
+    contents.document = document;
+    contents.revisions = m_store.revisions(documentId, QString(), 10000);
+
+    QSet<QString> seen;
+    for (const Block &block : document.blocks) {
+        if (block.mediaId <= 0)
+            continue;
+        const WorkspaceStore::MediaRecord record = m_store.mediaRecord(block.mediaId);
+        if (!record.isValid())
+            continue;
+        contents.mediaShaByBlock.insert(block.id, record.sha256);
+        if (seen.contains(record.sha256))
+            continue;
+        seen.insert(record.sha256);
+
+        documentio::BundleContents::MediaFile media;
+        media.sha256 = record.sha256;
+        media.filename = record.filename;
+        media.mimeType = record.mimeType;
+        media.byteSize = record.byteSize;
+        QFile file(m_media.absolutePathForSha(record.sha256, record.mimeType));
+        if (file.open(QIODevice::ReadOnly))
+            media.data = file.readAll();
+        contents.media.append(media);
+    }
+
+    if (!documentio::exportBundle(directory, contents, error))
+        return {};
+    return documentId;
+}
+
+QString Workspace::importBundleFrom(const QString &directory, QString *error)
+{
+    if (!isReady())
+        return {};
+
+    documentio::BundleContents contents;
+    if (!documentio::importBundle(directory, &contents, error))
+        return {};
+
+    Document document = contents.document;
+    document.id = newId();
+    if (document.title.isEmpty())
+        document.title = QStringLiteral("Imported document");
+
+    // Importing creates a new document: allocate fresh block identities so the
+    // bundle can coexist with its source, and remap media and history.
+    QHash<QString, QString> idMap;
+    for (Block &block : document.blocks) {
+        const QString oldId = block.id;
+        block.id = newId();
+        idMap.insert(oldId, block.id);
+    }
+
+    if (!m_store.createDocument(document, error))
+        return {};
+
+    QHash<QString, qint64> mediaIds;
+    for (const documentio::BundleContents::MediaFile &media : contents.media) {
+        if (!m_media.contains(media.sha256)) {
+            QString mediaError;
+            m_media.importData(media.data, media.filename, media.mimeType, &mediaError);
+        }
+        const qint64 mediaId =
+            m_store.ensureMedia(media.sha256, media.filename, media.mimeType, media.byteSize);
+        if (mediaId > 0)
+            mediaIds.insert(media.sha256, mediaId);
+    }
+
+    for (Block &block : document.blocks) {
+        const QString oldId = idMap.key(block.id);
+        const QString sha = contents.mediaShaByBlock.value(oldId);
+        if (!sha.isEmpty())
+            block.mediaId = mediaIds.value(sha);
+        else
+            block.mediaId = 0;
+    }
+
+    if (!m_store.saveDocument(document, {}, error))
+        return {};
+    for (const Revision &revision : contents.revisions) {
+        Revision remapped = revision;
+        remapped.blockId = idMap.value(revision.blockId, revision.blockId);
+        importRevision(document.id, remapped);
+    }
+
+    m_documents.refresh();
+    return document.id;
+}
+
+bool Workspace::importRevision(const QString &documentId, const Revision &revision)
+{
+    return m_store.insertRevision(documentId, revision);
 }
 
 QString Workspace::setting(const QString &key, const QString &fallback) const

@@ -63,6 +63,9 @@ public:
                                 int limit = 200);
     bool pruneRevisions(const QString &documentId, const QString &blockId, int keep);
 
+    /// Appends an already-formed revision (bundle import, history restore).
+    bool insertRevision(const QString &documentId, const Revision &revision);
+
     struct MediaRecord
     {
         qint64 id = 0;

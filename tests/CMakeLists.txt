@@ -11,6 +11,8 @@ endfunction()
 
 writero_add_test(tst_app_info core/tst_app_info.cpp)
 writero_add_test(tst_document document/tst_document.cpp)
+writero_add_test(tst_documentio document/tst_documentio.cpp)
+writero_add_test(tst_markdown markdown/tst_markdown.cpp)
 writero_add_test(tst_workspacestore storage/tst_workspacestore.cpp)
 
 add_executable(tst_workspace storage/tst_workspace.cpp)
