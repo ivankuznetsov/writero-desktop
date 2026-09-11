@@ -154,13 +154,11 @@ AiClient *AiController::makeClient(const QString &providerId, const QString &mod
 {
     if (m_providers == nullptr)
         return nullptr;
-    Q_UNUSED(model);
-    return m_providers->createClient(providerId, this);
+    return m_providers->createClient(providerId, model, this);
 }
 
 void AiController::executeChat(const WorkspaceStore::AiResultRecord &record,
-                               textactions::Operation operation, const QString &instruction,
-                               bool webSearch)
+                               textactions::Operation operation, const QString &instruction)
 {
     const Document &document = m_document->session().document();
     const Block *block = blockById(record.blockId);
@@ -188,7 +186,7 @@ void AiController::executeChat(const WorkspaceStore::AiResultRecord &record,
     }
 
     const QString resultId = record.id;
-    setBusy(true);
+    operationStarted();
     m_streamingText.clear();
     emit streamingChanged();
 
@@ -196,17 +194,16 @@ void AiController::executeChat(const WorkspaceStore::AiResultRecord &record,
     connect(client, &AiClient::chatFinished, this,
             [this, resultId, client](const QString &text, int, int) {
                 settleResult(resultId, QStringLiteral("completed"), text.trimmed(), {});
-                setBusy(false);
+                operationFinished();
                 client->deleteLater();
             });
     connect(client, &AiClient::failed, this, [this, resultId, client](const QString &error) {
         settleResult(resultId, QStringLiteral("failed"), {}, error);
-        setBusy(false);
+        operationFinished();
         client->deleteLater();
     });
 
-    const int maxTokens = operation == textactions::Operation::Research ? 16000 : 4096;
-    client->chat(record.model, messages, 0.7, maxTokens, webSearch);
+    client->chat(record.model, messages, 0.7, 4096);
 }
 
 QString AiController::runRewrite(int index, const QString &providerId, const QString &models,
@@ -232,28 +229,10 @@ QString AiController::runRewrite(int index, const QString &providerId, const QSt
             blockId, QStringLiteral("rewrite"), providerId, model, prompt);
         if (firstId.isEmpty())
             firstId = record.id;
-        executeChat(record, textactions::Operation::Rewrite, prompt, false);
+        executeChat(record, textactions::Operation::Rewrite, prompt);
     }
     refreshResults();
     return firstId;
-}
-
-QString AiController::runResearch(int index, const QString &providerId, const QString &model,
-                                  const QString &note)
-{
-    if (!m_document || !m_workspace)
-        return {};
-    setCurrentBlock(index);
-    if (index < 0 || index >= m_document->blocks()->rowCount())
-        return {};
-
-    const QString blockId =
-        m_document->blocks()->get(index).value(QStringLiteral("blockId")).toString();
-    const WorkspaceStore::AiResultRecord record = createResult(
-        blockId, QStringLiteral("research"), providerId, model, note);
-    executeChat(record, textactions::Operation::Research, note, true);
-    refreshResults();
-    return record.id;
 }
 
 QString AiController::runImageGeneration(int index, const QString &providerId, const QString &model,
@@ -280,7 +259,7 @@ QString AiController::runImageGeneration(int index, const QString &providerId, c
     }
 
     const QString resultId = record.id;
-    setBusy(true);
+    operationStarted();
     connect(client, &AiClient::imageFinished, this,
             [this, resultId, client](const QByteArray &data, const QString &mimeType) {
                 const QString sha = m_workspace->media()->importData(
@@ -288,12 +267,12 @@ QString AiController::runImageGeneration(int index, const QString &providerId, c
                 const qint64 mediaId = m_workspace->store()->ensureMedia(
                     sha, QStringLiteral("generated.png"), mimeType, data.size());
                 settleResult(resultId, QStringLiteral("completed"), QString::number(mediaId), {});
-                setBusy(false);
+                operationFinished();
                 client->deleteLater();
             });
     connect(client, &AiClient::failed, this, [this, resultId, client](const QString &error) {
         settleResult(resultId, QStringLiteral("failed"), {}, error);
-        setBusy(false);
+        operationFinished();
         client->deleteLater();
     });
 
@@ -325,7 +304,7 @@ QString AiController::runImageExplanation(int index, const QString &providerId,
         m_document->blocks()->get(index).value(QStringLiteral("blockId")).toString();
     const WorkspaceStore::AiResultRecord record = createResult(
         blockId, QStringLiteral("image_explanation"), providerId, model, prompt);
-    executeChat(record, textactions::Operation::ImageExplanation, prompt, false);
+    executeChat(record, textactions::Operation::ImageExplanation, prompt);
     refreshResults();
     return record.id;
 }
@@ -442,7 +421,7 @@ void AiController::runBulk(const QString &providerId, const QString &model,
     }
 
     const QString resultId = record.id;
-    setBusy(true);
+    operationStarted();
 
     QHash<QString, int> revisions;
     for (const QString &blockId : blockIds) {
@@ -462,7 +441,7 @@ void AiController::runBulk(const QString &providerId, const QString &model,
                 if (entries.isEmpty()) {
                     settleResult(resultId, QStringLiteral("failed"), {},
                                  QStringLiteral("The provider returned no block changes."));
-                    setBusy(false);
+                    operationFinished();
                     client->deleteLater();
                     return;
                 }
@@ -497,12 +476,12 @@ void AiController::runBulk(const QString &providerId, const QString &model,
                                       .arg(applied)
                                       .arg(skipped)
                                 : QStringLiteral("Updated %1 blocks.").arg(applied));
-                setBusy(false);
+                operationFinished();
                 client->deleteLater();
             });
     connect(client, &AiClient::failed, this, [this, resultId, client](const QString &error) {
         settleResult(resultId, QStringLiteral("failed"), {}, error);
-        setBusy(false);
+        operationFinished();
         client->deleteLater();
     });
 
@@ -527,15 +506,23 @@ void AiController::settleResult(const QString &resultId, const QString &status,
         emit notice(error);
 }
 
-void AiController::setBusy(bool busy)
+void AiController::operationStarted()
 {
-    if (m_busy == busy)
+    ++m_activeOperations;
+    if (m_busy)
         return;
-    m_busy = busy;
-    if (!busy) {
-        m_streamingText.clear();
-        emit streamingChanged();
-    }
+    m_busy = true;
+    emit busyChanged();
+}
+
+void AiController::operationFinished()
+{
+    m_activeOperations = qMax(0, m_activeOperations - 1);
+    if (m_activeOperations > 0)
+        return;
+    m_busy = false;
+    m_streamingText.clear();
+    emit streamingChanged();
     emit busyChanged();
 }
 

@@ -171,6 +171,45 @@ private slots:
         QVERIFY(!client.supportsImageGeneration());
     }
 
+    void rejectsUnsupportedReferenceImages()
+    {
+        ModelCapabilities capabilities;
+        capabilities.id = QStringLiteral("text-to-image");
+        capabilities.textOutput = true;
+        capabilities.imageOutput = true;
+        capabilities.imageInput = false;
+        capabilities.modalitiesKnown = true;
+
+        AiClient client(openAiProfile(1), QStringLiteral("key"), capabilities);
+        QSignalSpy failures(&client, &AiClient::failed);
+        client.generateImage(QStringLiteral("text-to-image"), QStringLiteral("a cat"),
+                             QByteArray("reference-bytes"), QStringLiteral("image/png"));
+
+        QCOMPARE(failures.count(), 1);
+        QVERIFY(failures.first().at(0).toString().contains(QStringLiteral("reference")));
+    }
+
+    void rejectsVisionRequestsForTextOnlyModels()
+    {
+        ModelCapabilities capabilities;
+        capabilities.id = QStringLiteral("text-only");
+        capabilities.textOutput = true;
+        capabilities.modalitiesKnown = true;
+
+        AiClient client(openAiProfile(1), QStringLiteral("key"), capabilities);
+        QSignalSpy failures(&client, &AiClient::failed);
+
+        AiMessage message;
+        message.role = QStringLiteral("user");
+        message.content = QStringLiteral("what is this?");
+        message.imageData = QByteArray("image-bytes");
+        message.imageMime = QStringLiteral("image/png");
+        client.chat(QStringLiteral("text-only"), {message});
+
+        QCOMPARE(failures.count(), 1);
+        QVERIFY(failures.first().at(0).toString().contains(QStringLiteral("image input")));
+    }
+
     void openAiCompatibleImageGeneration()
     {
         StubServer server;

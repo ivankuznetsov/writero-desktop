@@ -1,5 +1,7 @@
 #include <QtTest/QtTest>
 
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 
 #include "ai/providerregistry.h"
@@ -7,6 +9,42 @@
 #include "storage/workspace.h"
 
 using namespace writero;
+
+namespace {
+
+class StubServer : public QTcpServer
+{
+public:
+    explicit StubServer(QObject *parent = nullptr)
+        : QTcpServer(parent)
+    {
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            QTcpSocket *socket = nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                m_request += socket->readAll();
+                if (!m_request.contains("\r\n\r\n"))
+                    return;
+                m_request.clear();
+                socket->write(
+                    QByteArrayLiteral("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                      "Content-Length: ")
+                    + QByteArray::number(m_body.size())
+                    + QByteArrayLiteral("\r\nConnection: close\r\n\r\n") + m_body);
+                socket->flush();
+                socket->disconnectFromHost();
+            });
+        });
+    }
+
+    bool listen() { return QTcpServer::listen(QHostAddress::LocalHost, 0); }
+    void setBody(const QByteArray &body) { m_body = body; }
+
+private:
+    QByteArray m_request;
+    QByteArray m_body;
+};
+
+} // namespace
 
 class TestProviderRegistry : public QObject
 {
@@ -68,6 +106,57 @@ private slots:
         ProviderRegistry afterRemoval;
         afterRemoval.setWorkspace(&workspace);
         QCOMPARE(afterRemoval.profileList().size(), 0);
+    }
+
+    void modelCatalogFiltersOperationsAndCaches()
+    {
+        qputenv("WRITERO_DISABLE_KEYRING", "1");
+
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+
+        StubServer server;
+        QVERIFY(server.listen());
+        server.setBody(R"({"data":[
+            {"id":"text-only","architecture":{"input_modalities":["text"],
+                                              "output_modalities":["text"]}},
+            {"id":"img","architecture":{"input_modalities":["image","text"],
+                                        "output_modalities":["image","text"]}},
+            {"id":"vision","architecture":{"input_modalities":["text","image"],
+                                           "output_modalities":["text"]}}
+        ]})");
+
+        ProviderRegistry registry;
+        registry.setWorkspace(&workspace);
+        const QString id = registry.addProvider(
+            QStringLiteral("OR"), QStringLiteral("openrouter"),
+            QStringLiteral("http://127.0.0.1:%1/api/v1").arg(server.serverPort()), {}, QString());
+
+        QSignalSpy changed(&registry, &ProviderRegistry::modelsChanged);
+        registry.refreshModels(id);
+        QTRY_COMPARE_WITH_TIMEOUT(changed.count(), 1, 5000);
+
+        QCOMPARE(registry.modelsFor(id, QStringLiteral("text")).size(), 3);
+        QCOMPARE(registry.modelsFor(id, QStringLiteral("generate")).size(), 1);
+        QCOMPARE(registry.modelsFor(id, QStringLiteral("explain")).size(), 2);
+        QCOMPARE(registry.modelsFor(id, QStringLiteral("generate"))
+                     .first()
+                     .toMap()
+                     .value(QStringLiteral("id"))
+                     .toString(),
+                 QStringLiteral("img"));
+
+        QVERIFY(registry.modelSupportsReference(id, QStringLiteral("img")));
+        QVERIFY(!registry.modelSupportsReference(id, QStringLiteral("text-only")));
+        QVERIFY(!registry.modelSupportsImageGeneration(id, QStringLiteral("vision")));
+        QVERIFY(registry.modelSupportsImageInput(id, QStringLiteral("vision")));
+
+        // The catalog is cached in workspace settings and reloads with it.
+        ProviderRegistry reopened;
+        reopened.setWorkspace(&workspace);
+        QVERIFY(reopened.hasModels(id));
+        QCOMPARE(reopened.modelsFor(id, QStringLiteral("generate")).size(), 1);
     }
 
     void createClientCarriesProfile()

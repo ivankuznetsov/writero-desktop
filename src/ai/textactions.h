@@ -11,7 +11,6 @@ namespace writero::textactions {
 enum class Operation {
     Rewrite,
     Humanize,
-    Research,
     Polish,
     ImageExplanation,
 };

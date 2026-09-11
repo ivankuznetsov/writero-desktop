@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QVector>
 
+#include "ai/modelcatalog.h"
 #include "ai/providerprofile.h"
 
 class QNetworkAccessManager;
@@ -30,7 +31,8 @@ class AiClient : public QObject
     Q_OBJECT
 
 public:
-    AiClient(ProviderProfile profile, QString apiKey, QObject *parent = nullptr);
+    AiClient(ProviderProfile profile, QString apiKey, ModelCapabilities capabilities = {},
+             QObject *parent = nullptr);
     ~AiClient() override;
 
     void chat(const QString &model, const QVector<AiMessage> &messages, double temperature = 0.7,
@@ -41,8 +43,11 @@ public:
     void abort();
     bool isRunning() const;
 
+    /// Capabilities come from the discovered model catalog when available and
+    /// fall back to conservative provider defaults otherwise.
     bool supportsImageGeneration() const;
     bool supportsVision() const;
+    bool supportsReferenceImage() const;
 
 signals:
     void tokenReceived(const QString &delta);
@@ -67,6 +72,7 @@ private:
     QString endpoint(const QString &suffix) const;
 
     ProviderProfile m_profile;
+    ModelCapabilities m_capabilities;
     QString m_apiKey;
     QNetworkAccessManager *m_network = nullptr;
     QNetworkReply *m_reply = nullptr;

@@ -62,16 +62,6 @@ private slots:
         QVERIFY(messages.first().content.contains(QStringLiteral("bullet list")));
     }
 
-    void researchAsksForSources()
-    {
-        const Document document = sampleDocument();
-        const QVector<AiMessage> messages = textactions::buildMessages(
-            textactions::Operation::Research, document, document.blocks.at(1),
-            QStringLiteral("more detail"));
-        QVERIFY(messages.first().content.contains(QStringLiteral("cite sources")));
-        QVERIFY(messages.last().content.contains(QStringLiteral("Research results")));
-    }
-
     void bulkMessagesEncodeBlockIds()
     {
         const Document document = sampleDocument();

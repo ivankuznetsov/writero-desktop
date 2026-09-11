@@ -97,10 +97,6 @@ QString operationSystemPrompt(Operation operation)
         return humanizePrompt()
             + QStringLiteral(" Return ONLY the rewritten block, without surrounding blocks or "
                              "commentary.");
-    case Operation::Research:
-        return QStringLiteral("You are a research assistant with web search. Produce flowing "
-                              "prose with sparing headings, prefer short paragraphs and bullet "
-                              "lists where they help, and cite sources for every claim.");
     case Operation::Polish:
         return QStringLiteral("You are a proofreader. Fix spelling, grammar, punctuation, and "
                               "typography. Preserve meaning, markdown, lists, and code exactly. "
@@ -145,15 +141,6 @@ QVector<AiMessage> buildMessages(Operation operation, const Document &document, 
         break;
     case Operation::Humanize:
         user = QStringLiteral("Text to humanize:\n\n%1").arg(block.content);
-        break;
-    case Operation::Research:
-        if (!block.content.trimmed().isEmpty())
-            user = QStringLiteral("Text to research: %1").arg(block.content);
-        else
-            user = QStringLiteral("Topic to research: %1").arg(instruction);
-        if (!instruction.isEmpty() && !block.content.trimmed().isEmpty())
-            user += QStringLiteral("\n\nAdditional context: %1").arg(instruction);
-        user += QStringLiteral("\n\nResearch results:");
         break;
     case Operation::Polish:
         user = block.content;

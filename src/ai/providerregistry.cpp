@@ -11,6 +11,7 @@ namespace writero {
 namespace {
 constexpr auto SettingsKey = "ai.providers";
 constexpr auto CredentialPrefix = "provider.";
+constexpr auto ModelsPrefix = "ai.models.";
 } // namespace
 
 ProviderRegistry::ProviderRegistry(QObject *parent)
@@ -35,8 +36,21 @@ void ProviderRegistry::load()
         for (const QJsonValue &value : array)
             m_profiles.append(ProviderProfile::fromJson(value.toObject().toVariantMap()));
     }
+    loadModelCache();
     rebuildVariantProfiles();
     emit changed();
+}
+
+void ProviderRegistry::loadModelCache()
+{
+    m_models.clear();
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return;
+    for (const ProviderProfile &profile : m_profiles) {
+        const QString cached = m_workspace->setting(modelsKey(profile.id));
+        if (!cached.isEmpty())
+            m_models.insert(profile.id, ModelCatalog::fromJson(cached));
+    }
 }
 
 void ProviderRegistry::save()
@@ -136,6 +150,105 @@ bool ProviderRegistry::hasCredential(const QString &id) const
     return !m_credentials.load(credentialKey(id)).isEmpty();
 }
 
+void ProviderRegistry::refreshModels(const QString &id)
+{
+    if (m_loadingModels.contains(id))
+        return;
+    const ProviderProfile selected = profile(id);
+    if (selected.id.isEmpty()) {
+        emit modelsFailed(id, QStringLiteral("Provider not found."));
+        return;
+    }
+
+    m_loadingModels.insert(id);
+    emit changed();
+
+    ModelCatalog *catalog = new ModelCatalog(this);
+    connect(catalog, &ModelCatalog::finished, this, [this, catalog, id](bool ok) {
+        m_loadingModels.remove(id);
+        if (!ok) {
+            m_error = catalog->error();
+            emit modelsFailed(id, m_error);
+            emit changed();
+            catalog->deleteLater();
+            return;
+        }
+
+        m_models.insert(id, catalog->models());
+        if (m_workspace != nullptr && m_workspace->isReady())
+            m_workspace->setSetting(modelsKey(id), ModelCatalog::toJson(catalog->models()));
+        emit modelsChanged(id);
+        emit changed();
+        catalog->deleteLater();
+    });
+
+    catalog->fetch(selected, m_credentials.load(credentialKey(id)));
+}
+
+bool ProviderRegistry::modelsLoading(const QString &id) const
+{
+    return m_loadingModels.contains(id);
+}
+
+bool ProviderRegistry::hasModels(const QString &id) const
+{
+    return !m_models.value(id).isEmpty();
+}
+
+QVariantList ProviderRegistry::modelsFor(const QString &id, const QString &operation) const
+{
+    QVariantList result;
+    const QVector<ModelCapabilities> models = m_models.value(id);
+    for (const ModelCapabilities &model : models) {
+        if (operation == QLatin1String("generate") && !model.imageOutput)
+            continue;
+        if (operation == QLatin1String("explain") && !model.imageInput)
+            continue;
+        if (operation == QLatin1String("text") && !model.textOutput)
+            continue;
+
+        result.append(QVariantMap{
+            {QStringLiteral("id"), model.id},
+            {QStringLiteral("name"), model.name},
+            {QStringLiteral("imageInput"), model.imageInput},
+            {QStringLiteral("imageOutput"), model.imageOutput},
+            {QStringLiteral("known"), model.modalitiesKnown},
+        });
+    }
+    return result;
+}
+
+bool ProviderRegistry::modelSupportsReference(const QString &id, const QString &modelId) const
+{
+    const ProviderProfile selected = profile(id);
+    if (selected.type != ProviderType::OpenRouter)
+        return false;
+    return capabilitiesFor(id, modelId).imageInput;
+}
+
+bool ProviderRegistry::modelSupportsImageGeneration(const QString &id, const QString &modelId) const
+{
+    return capabilitiesFor(id, modelId).imageOutput;
+}
+
+bool ProviderRegistry::modelSupportsImageInput(const QString &id, const QString &modelId) const
+{
+    return capabilitiesFor(id, modelId).imageInput;
+}
+
+ModelCapabilities ProviderRegistry::capabilitiesFor(const QString &id, const QString &modelId) const
+{
+    const QVector<ModelCapabilities> models = m_models.value(id);
+    for (const ModelCapabilities &model : models) {
+        if (model.id == modelId)
+            return model;
+    }
+    if (modelId.isEmpty())
+        return {};
+    const ProviderProfile selected = profile(id);
+    return ModelCatalog::infer(modelId, selected.type);
+}
+
 ProviderProfile ProviderRegistry::profile(const QString &id) const
 {
     for (const ProviderProfile &profile : m_profiles) {
@@ -145,17 +258,23 @@ ProviderProfile ProviderRegistry::profile(const QString &id) const
     return {};
 }
 
-AiClient *ProviderRegistry::createClient(const QString &id, QObject *parent)
+AiClient *ProviderRegistry::createClient(const QString &id, const QString &modelId, QObject *parent)
 {
     const ProviderProfile selected = profile(id);
     if (selected.id.isEmpty())
         return nullptr;
-    return new AiClient(selected, m_credentials.load(credentialKey(id)), parent);
+    return new AiClient(selected, m_credentials.load(credentialKey(id)),
+                        capabilitiesFor(id, modelId), parent);
 }
 
 QString ProviderRegistry::credentialKey(const QString &id)
 {
     return QString::fromLatin1(CredentialPrefix) + id;
+}
+
+QString ProviderRegistry::modelsKey(const QString &id)
+{
+    return QString::fromLatin1(ModelsPrefix) + id;
 }
 
 } // namespace writero

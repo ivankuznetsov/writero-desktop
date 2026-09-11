@@ -4,39 +4,107 @@ import QtQuick.Layouts
 
 import Writero
 
-// AI side panel: rewrite, research, and image tools with result review.
+// AI side panel: rewrite, image generation, and image explanation.
+//
+// Model choices come from the provider's model catalog, filtered by what the
+// operation actually needs. When a catalog is unavailable the panel falls
+// back to a typed model name; when no cataloged model can perform the
+// operation, the action is disabled with an explanation instead of failing
+// silently.
 Drawer {
     id: aiPanel
     objectName: "aiPanel"
     edge: Qt.RightEdge
-    width: 400
+    width: 420
     height: parent ? parent.height : 600
     modal: false
     interactive: true
 
     property AiController ai
     property int operationIndex: 0
+    property var availableModels: []
+    property string capabilityMessage: ""
+
+    readonly property var providers: ai ? ai.providers : null
+    readonly property string providerId: providerBox.currentValue ? providerBox.currentValue : ""
+    readonly property string operation: operationIndex === 0 ? "text"
+                                        : operationIndex === 1 ? "generate" : "explain"
+
+    function updateModels() {
+        capabilityMessage = ""
+        if (!providers || providerId === "") {
+            availableModels = []
+            return
+        }
+        availableModels = providers.modelsFor(providerId, operation)
+        modelBox.currentIndex = availableModels.length > 0 ? 0 : -1
+        if (providers.modelsLoading(providerId)) {
+            capabilityMessage = qsTr("Loading models\u2026")
+        } else if (!providers.hasModels(providerId)) {
+            capabilityMessage = qsTr("Model catalog not loaded for this provider.")
+        } else if (availableModels.length === 0) {
+            capabilityMessage = operation === "generate"
+                ? qsTr("No image-capable model is available for this provider.")
+                : operation === "explain"
+                  ? qsTr("No vision-capable model is available for this provider.")
+                  : qsTr("No text model is available for this provider.")
+        }
+        referenceCheck.checked = false
+    }
+
+    function selectedModel() {
+        if (availableModels.length > 0 && modelBox.currentIndex >= 0)
+            return availableModels[modelBox.currentIndex].id
+        return fallbackModelField.text.trim()
+    }
+
+    function selectedModels() {
+        const primary = selectedModel()
+        if (primary === "" || operationIndex !== 0)
+            return primary
+        if (compareBox.currentIndex <= 0)
+            return primary
+        const second = compareBox.currentValue
+        return second && second !== primary ? primary + "," + second : primary
+    }
+
+    function run() {
+        if (!ai || providerId === "")
+            return
+        const models = selectedModels()
+        if (models === "")
+            return
+        if (operationIndex === 0)
+            ai.runRewrite(ai.currentBlock, providerId, models, promptField.text)
+        else if (operationIndex === 1)
+            ai.runImageGeneration(ai.currentBlock, providerId, models, promptField.text,
+                                  referenceCheck.checked)
+        else
+            ai.runImageExplanation(ai.currentBlock, providerId, models, promptField.text)
+    }
+
+    function canRun() {
+        if (!ai || ai.busy || providerId === "" || selectedModels() === "")
+            return false
+        if (operationIndex === 1)
+            return providers.modelSupportsImageGeneration(providerId, selectedModel())
+        if (operationIndex === 2)
+            return providers.modelSupportsImageInput(providerId, selectedModel())
+        return true
+    }
+
+    onOperationIndexChanged: updateModels()
 
     background: Rectangle {
         color: Theme.surface
         border.color: Theme.border
     }
 
-    function run() {
-        if (!ai || !providerBox.currentValue)
-            return
-        const models = modelField.text.trim()
-        switch (operationIndex) {
-        case 0:
-            ai.runRewrite(ai.currentBlock, providerBox.currentValue, models, promptField.text)
-            break
-        case 1:
-            ai.runResearch(ai.currentBlock, providerBox.currentValue, models, promptField.text)
-            break
-        case 2:
-            ai.runImageGeneration(ai.currentBlock, providerBox.currentValue, models,
-                                  promptField.text, referenceCheck.checked)
-            break
+    Connections {
+        target: aiPanel.providers
+        function onModelsChanged(id) { aiPanel.updateModels() }
+        function onModelsFailed(id, error) {
+            aiPanel.capabilityMessage = error
         }
     }
 
@@ -52,35 +120,58 @@ Drawer {
             font.bold: true
         }
 
+        ComboBox {
+            id: providerBox
+            Layout.fillWidth: true
+            textRole: "name"
+            valueRole: "id"
+            model: aiPanel.providers ? aiPanel.providers.profiles : []
+            displayText: currentIndex >= 0 ? currentText : qsTr("No provider configured")
+            onCurrentIndexChanged: aiPanel.updateModels()
+        }
+
         RowLayout {
             Layout.fillWidth: true
+            spacing: 4
 
             ComboBox {
-                id: providerBox
+                id: modelBox
                 Layout.fillWidth: true
+                visible: aiPanel.availableModels.length > 0
                 textRole: "name"
                 valueRole: "id"
-                model: aiPanel.ai ? aiPanel.ai.providers.profiles : []
-                displayText: currentIndex >= 0 ? currentText : qsTr("No provider configured")
+                model: aiPanel.availableModels
+            }
+
+            TextField {
+                id: fallbackModelField
+                Layout.fillWidth: true
+                visible: aiPanel.availableModels.length === 0
+                placeholderText: qsTr("Model id")
+            }
+
+            ToolButton {
+                text: "\u21BB"
+                display: AbstractButton.TextOnly
+                enabled: aiPanel.providerId !== ""
+                         && !aiPanel.providers.modelsLoading(aiPanel.providerId)
+                ToolTip.text: qsTr("Refresh model list")
+                ToolTip.visible: hovered
+                onClicked: aiPanel.providers.refreshModels(aiPanel.providerId)
             }
         }
 
-        TextField {
-            id: modelField
+        ComboBox {
+            id: compareBox
             Layout.fillWidth: true
-            placeholderText: operationIndex === 0
-                             ? qsTr("Model or comma-separated models")
-                             : qsTr("Model")
-            Component.onCompleted: {
-                if (aiPanel.ai && providerBox.currentIndex >= 0)
-                    text = providerBox.model[providerBox.currentIndex].defaultModel || ""
-            }
-            Connections {
-                target: providerBox
-                function onCurrentIndexChanged() {
-                    if (providerBox.currentIndex >= 0)
-                        modelField.text = providerBox.model[providerBox.currentIndex].defaultModel || ""
-                }
+            visible: aiPanel.operationIndex === 0 && aiPanel.availableModels.length > 0
+            textRole: "name"
+            valueRole: "id"
+            model: {
+                const entries = [{ id: "", name: qsTr("Do not compare") }]
+                for (let i = 0; i < aiPanel.availableModels.length; ++i)
+                    entries.push(aiPanel.availableModels[i])
+                return entries
             }
         }
 
@@ -91,27 +182,38 @@ Drawer {
             onCurrentIndexChanged: aiPanel.operationIndex = currentIndex
 
             TabButton { text: qsTr("Rewrite") }
-            TabButton { text: qsTr("Research") }
-            TabButton { text: qsTr("Image") }
+            TabButton { text: qsTr("Generate") }
+            TabButton { text: qsTr("Explain") }
+        }
+
+        Label {
+            Layout.fillWidth: true
+            visible: aiPanel.capabilityMessage !== ""
+            text: aiPanel.capabilityMessage
+            wrapMode: Text.Wrap
+            color: Theme.textMuted
         }
 
         ScrollView {
             Layout.fillWidth: true
-            Layout.preferredHeight: 120
+            Layout.preferredHeight: 110
 
             TextArea {
                 id: promptField
                 objectName: "aiPrompt"
                 wrapMode: TextEdit.Wrap
-                placeholderText: operationIndex === 2
+                placeholderText: aiPanel.operationIndex === 1
                                  ? qsTr("Describe the image to generate")
-                                 : qsTr("Instruction, for example \"make it more concise\"")
+                                 : aiPanel.operationIndex === 2
+                                   ? qsTr("What should the explanation focus on?")
+                                   : qsTr("Instruction, for example \"make it more concise\"")
             }
         }
 
         Flow {
             Layout.fillWidth: true
             spacing: 4
+            visible: aiPanel.operationIndex === 0
 
             Repeater {
                 model: aiPanel.ai ? aiPanel.ai.suggestions() : []
@@ -128,14 +230,21 @@ Drawer {
 
         CheckBox {
             id: referenceCheck
-            visible: operationIndex === 2
+            visible: aiPanel.operationIndex === 1
+            enabled: aiPanel.availableModels.length > 0 && modelBox.currentIndex >= 0
+                     && aiPanel.providers.modelSupportsReference(aiPanel.providerId,
+                                                                 aiPanel.selectedModel())
             text: qsTr("Use current image as reference")
+            ToolTip.visible: hovered && !enabled
+            ToolTip.text: aiPanel.availableModels.length === 0
+                          ? qsTr("Load the model catalog to see if references are supported.")
+                          : qsTr("The selected model or provider does not support reference images.")
         }
 
         Button {
             Layout.fillWidth: true
             text: aiPanel.ai && aiPanel.ai.busy ? qsTr("Working\u2026") : qsTr("Run")
-            enabled: aiPanel.ai && !aiPanel.ai.busy && providerBox.currentIndex >= 0
+            enabled: aiPanel.canRun()
             onClicked: aiPanel.run()
         }
 
@@ -240,5 +349,12 @@ Drawer {
                 color: Theme.textFaint
             }
         }
+    }
+
+    onOpened: {
+        updateModels()
+        if (providers && providerId !== "" && !providers.hasModels(providerId)
+            && !providers.modelsLoading(providerId))
+            providers.refreshModels(providerId)
     }
 }

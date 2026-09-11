@@ -22,8 +22,9 @@ Implemented so far:
 - [x] U4 — Native import/export and media history
 - [x] U5 — Provider connections and local AI execution
 - [x] U6 — AI text and result-review parity
-- [ ] U7 — Research and AI media parity (on-demand research, image
-  generation, and image explanation work; scheduled research is not built yet)
+- [x] U7 — Image generation and explanation parity with per-model capability
+  discovery (research and scheduled research are cloud functions that arrive
+  as synced articles, so they are not local operations)
 - [ ] U8–U12 — Writero service API and sync (service-side work in the
   Writero Rails repository)
 - [x] U13 — Open-source packaging and Omarchy acceptance artifacts

@@ -43,9 +43,11 @@ QJsonObject messageToJson(const AiMessage &message)
 
 } // namespace
 
-AiClient::AiClient(ProviderProfile profile, QString apiKey, QObject *parent)
+AiClient::AiClient(ProviderProfile profile, QString apiKey, ModelCapabilities capabilities,
+                   QObject *parent)
     : QObject(parent)
     , m_profile(std::move(profile))
+    , m_capabilities(std::move(capabilities))
     , m_apiKey(std::move(apiKey))
     , m_network(new QNetworkAccessManager(this))
 {
@@ -63,11 +65,28 @@ bool AiClient::isRunning() const
 
 bool AiClient::supportsImageGeneration() const
 {
+    if (m_capabilities.modalitiesKnown)
+        return m_capabilities.imageOutput;
+    if (!m_capabilities.id.isEmpty())
+        return m_capabilities.imageOutput;
     return m_profile.type != ProviderType::Ollama;
 }
 
 bool AiClient::supportsVision() const
 {
+    if (m_capabilities.modalitiesKnown)
+        return m_capabilities.imageInput;
+    if (!m_capabilities.id.isEmpty())
+        return m_capabilities.imageInput;
+    return m_profile.type != ProviderType::Ollama || m_capabilities.imageInput;
+}
+
+bool AiClient::supportsReferenceImage() const
+{
+    if (m_profile.type != ProviderType::OpenRouter)
+        return false;
+    if (m_capabilities.modalitiesKnown || !m_capabilities.id.isEmpty())
+        return m_capabilities.imageInput;
     return true;
 }
 
@@ -82,6 +101,13 @@ QString AiClient::endpoint(const QString &suffix) const
 void AiClient::chat(const QString &model, const QVector<AiMessage> &messages, double temperature,
                     int maxTokens, bool webSearch)
 {
+    for (const AiMessage &message : messages) {
+        if (!message.imageData.isEmpty() && !supportsVision()) {
+            fail(QStringLiteral("The selected model cannot accept image input."));
+            return;
+        }
+    }
+
     reset();
     m_mode = Mode::Chat;
 
@@ -144,6 +170,10 @@ void AiClient::generateImage(const QString &model, const QString &prompt,
 {
     if (!supportsImageGeneration()) {
         fail(QStringLiteral("This provider does not support image generation."));
+        return;
+    }
+    if (!referenceImage.isEmpty() && !supportsReferenceImage()) {
+        fail(QStringLiteral("The selected model or provider does not support reference images."));
         return;
     }
 

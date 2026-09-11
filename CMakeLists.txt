@@ -32,6 +32,8 @@ qt_standard_project_setup(REQUIRES 6.5)
 add_library(writero_core STATIC
     src/ai/aiclient.h
     src/ai/aiclient.cpp
+    src/ai/modelcatalog.h
+    src/ai/modelcatalog.cpp
     src/ai/providerprofile.h
     src/ai/providerprofile.cpp
     src/ai/textactions.h

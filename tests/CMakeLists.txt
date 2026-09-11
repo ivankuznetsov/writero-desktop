@@ -14,6 +14,7 @@ writero_add_test(tst_aiclient ai/tst_aiclient.cpp)
 writero_add_test(tst_document document/tst_document.cpp)
 writero_add_test(tst_documentio document/tst_documentio.cpp)
 writero_add_test(tst_markdown markdown/tst_markdown.cpp)
+writero_add_test(tst_modelcatalog ai/tst_modelcatalog.cpp)
 writero_add_test(tst_textactions ai/tst_textactions.cpp)
 writero_add_test(tst_workspacestore storage/tst_workspacestore.cpp)
 

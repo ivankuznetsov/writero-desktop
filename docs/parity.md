@@ -49,12 +49,28 @@ text), fenced code with language, lists with nesting and lazy continuation,
 merged `>` quotes, `---`/`***`/`___` dividers, and blank-line-separated text
 paragraphs. Native import/export implements the same mapping in U4.
 
+## AI operations
+
+| Area | Web behavior | Native |
+|---|---|---|
+| Rewrite | Prompt plus multi-model alternatives; individual results wait for Replace/Insert below/Dismiss while explicit bulk actions apply automatically (`app/services/ai_service.rb`, `multi_model_rewrite_service.rb`) | native: `AiController` and `AiPanel.qml`, results persisted before dispatch |
+| Research | Block research with preserved sources; scheduled research creates articles (`scheduled_research_service.rb`) | cloud: runs as a service function and arrives as a synced article (U8–U12); no local research operation |
+| Image generation | OpenRouter chat with image modalities; replace snapshots old media, add-below creates a media block (`image_generation_service.rb`) | native: per-model capability discovery, reference images only where the model and provider support them, results stored as workspace media |
+| Image explanation | Vision model describes the block's image; read-only result (`image_explainer_service.rb`) | native: Explain tab, model filtered to image-input capability |
+
+Model capabilities come from the provider catalog when it reports modalities
+(OpenRouter's `architecture.input_modalities` / `output_modalities`); other
+endpoints fall back to name-based inference and the UI says so rather than
+claiming support.
+
 ## Deliberate divergences
 
 - Backspace-at-start merges blocks. The web cannot merge; merging is a native
   writing-flow necessity and is fully undoable.
 - Native undo spans the whole session rather than one browser editing session.
 - Native exposes explicit move up/down buttons in addition to drag reordering.
+- Research is not a local operation: it is a cloud function delivered as a
+  synced article, per product direction.
 
 ## Evidence
 
@@ -66,6 +82,6 @@ paragraphs. Native import/export implements the same mapping in U4.
 | U4 | `tests/markdown/tst_markdown.cpp`, `tests/document/tst_documentio.cpp`, media history restore in `tst_workspace.cpp` |
 | U5 | `tests/ai/tst_aiclient.cpp` (stub server), `tst_providerregistry.cpp` |
 | U6 | `tests/ai/tst_textactions.cpp`, `tst_aicontroller.cpp` |
-| U7 | on-demand research and image operations in `tst_aicontroller.cpp`; scheduled research remains open |
+| U7 | on-demand image generation and explanation with catalog-based capability filtering (`tst_modelcatalog`, `tst_aiclient`, `tst_aicontroller`); research is a cloud function delivered as a synced article |
 | U8–U12 | not implemented; service-side work in the Writero repository |
 | U13 | `docs/verification.md`, `packaging/`, install rules in `CMakeLists.txt` |

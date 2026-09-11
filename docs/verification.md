@@ -20,7 +20,8 @@ ctest --test-dir build --output-on-failure
 | `tst_documentio` | Markdown/HTML/PDF export, bundle round trip, tamper and traversal rejection |
 | `tst_workspacestore` | SQLite schema, revisions, crash recovery, media staging cleanup |
 | `tst_workspace` | Workspace lock, library model, autosave, history restore, bundle import |
-| `tst_aiclient` | Provider protocols against a local stub HTTP server (SSE, NDJSON, errors, images) |
+| `tst_aiclient` | Provider protocols against a local stub HTTP server (SSE, NDJSON, errors, images, capability refusals) |
+| `tst_modelcatalog` | Model catalog parsing, modality inference, cache round trip |
 | `tst_textactions` | Prompt/context assembly, humanize detection, bulk encoding |
 | `tst_aicontroller` | End-to-end rewrite/bulk flows with a stub provider and persisted results |
 | `tst_providerregistry` | Profile persistence without secrets, keyring fallback |
@@ -54,9 +55,16 @@ under **AI providers** (or in `workspace.db` settings). To record evidence:
    change with `source = ai`.
 4. Run with two models and verify each alternative can be accepted or
    dismissed independently.
-5. Run Research and verify source links survive applying and reopening.
+5. Open the model list and verify the catalog loads (OpenRouter reports image
+   output and image input modalities). For Generate, confirm only
+   image-capable models are listed and that the reference checkbox is enabled
+   only for a model that accepts image input on OpenRouter.
 6. Run Image generation and verify Replace snapshots the previous media into
-   media history.
+   media history; switch to Explain and verify a text-only model cannot be
+   selected.
+7. Verify unsupported paths explain themselves: a text-only model is not
+   offered for Generate, and a reference image is refused with a message
+   instead of being silently dropped.
 
 Record the provider, model identifier, and app revision in the experiment
 notes. Never record API keys or private article content.

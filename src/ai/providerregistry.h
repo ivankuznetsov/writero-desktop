@@ -2,9 +2,11 @@
 
 #include <QObject>
 #include <QQmlEngine>
+#include <QSet>
 #include <QVector>
 
 #include "ai/aiclient.h"
+#include "ai/modelcatalog.h"
 #include "ai/providerprofile.h"
 #include "security/credentialstore.h"
 #include "storage/workspace.h"
@@ -43,20 +45,38 @@ public:
     Q_INVOKABLE bool hasCredential(const QString &id) const;
     Q_INVOKABLE QString error() const { return m_error; }
 
+    /// Model catalog: `operation` is `text`, `generate`, or `explain`.
+    Q_INVOKABLE void refreshModels(const QString &id);
+    Q_INVOKABLE bool modelsLoading(const QString &id) const;
+    Q_INVOKABLE bool hasModels(const QString &id) const;
+    Q_INVOKABLE QVariantList modelsFor(const QString &id, const QString &operation) const;
+    Q_INVOKABLE bool modelSupportsReference(const QString &id, const QString &modelId) const;
+    Q_INVOKABLE bool modelSupportsImageGeneration(const QString &id,
+                                                  const QString &modelId) const;
+    Q_INVOKABLE bool modelSupportsImageInput(const QString &id, const QString &modelId) const;
+
     ProviderProfile profile(const QString &id) const;
-    AiClient *createClient(const QString &id, QObject *parent = nullptr);
+    ModelCapabilities capabilitiesFor(const QString &id, const QString &modelId) const;
+    AiClient *createClient(const QString &id, const QString &modelId = {},
+                           QObject *parent = nullptr);
 
 signals:
     void changed();
+    void modelsChanged(const QString &id);
+    void modelsFailed(const QString &id, const QString &error);
 
 private:
     static QString credentialKey(const QString &id);
+    static QString modelsKey(const QString &id);
     void load();
     void save();
+    void loadModelCache();
     void rebuildVariantProfiles();
 
     QVector<ProviderProfile> m_profiles;
     QVariantList m_variantProfiles;
+    QHash<QString, QVector<ModelCapabilities>> m_models;
+    QSet<QString> m_loadingModels;
     Workspace *m_workspace = nullptr;
     CredentialStore m_credentials;
     QString m_error;

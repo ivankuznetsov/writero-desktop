@@ -48,8 +48,6 @@ public:
     /// `models` is a comma-separated list; each model produces one alternative.
     Q_INVOKABLE QString runRewrite(int index, const QString &providerId, const QString &models,
                                    const QString &prompt);
-    Q_INVOKABLE QString runResearch(int index, const QString &providerId, const QString &model,
-                                    const QString &note);
     Q_INVOKABLE QString runImageGeneration(int index, const QString &providerId,
                                            const QString &model, const QString &prompt,
                                            bool useCurrentAsReference = false);
@@ -80,10 +78,11 @@ private:
                                                 const QString &prompt, const QString &batchId = {});
     AiClient *makeClient(const QString &providerId, const QString &model);
     void executeChat(const WorkspaceStore::AiResultRecord &record,
-                     textactions::Operation operation, const QString &instruction, bool webSearch);
+                     textactions::Operation operation, const QString &instruction);
     void settleResult(const QString &resultId, const QString &status, const QString &content,
                       const QString &error);
-    void setBusy(bool busy);
+    void operationStarted();
+    void operationFinished();
     void appendStreaming(const QString &delta);
     void runBulk(const QString &providerId, const QString &model, textactions::Operation operation,
                  const QString &instruction);
@@ -96,6 +95,7 @@ private:
     QVector<WorkspaceStore::AiResultRecord> m_resultRecords;
     int m_currentBlock = -1;
     bool m_busy = false;
+    int m_activeOperations = 0;
     QString m_streamingText;
 };
 
