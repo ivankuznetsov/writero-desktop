@@ -86,6 +86,10 @@ public:
     /// -1 when the block is not a list.
     Q_INVOKABLE int handleListEnter(int index, int cursorPosition);
 
+    /// Indents (Tab) or outdents (Shift+Tab) the list line at the cursor.
+    /// Returns the new cursor position, or -1 when the block is not a list.
+    Q_INVOKABLE int indentListItem(int index, int cursorPosition, bool outdent);
+
     /// Applies inline markdown formatting around a selection. Returns
     /// `{ text, selectionStart, selectionEnd, cursor }`.
     Q_INVOKABLE QVariantMap applyFormat(int index, int selectionStart, int selectionEnd,

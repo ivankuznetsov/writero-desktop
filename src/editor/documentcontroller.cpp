@@ -304,6 +304,50 @@ int DocumentController::handleListEnter(int index, int cursorPosition)
     return cursor + 1 + continuation.size();
 }
 
+int DocumentController::indentListItem(int index, int cursorPosition, bool outdent)
+{
+    const auto &blocks = m_session.document().blocks;
+    if (index < 0 || index >= blocks.size())
+        return -1;
+
+    const Block block = blocks.at(index);
+    if (!blocktype::isList(block.type))
+        return -1;
+
+    const QString content = block.content;
+    const int cursor = qBound(0, cursorPosition, content.size());
+    const int lineStart = cursor > 0 ? content.lastIndexOf(QLatin1Char('\n'), cursor - 1) + 1 : 0;
+    int lineEnd = content.indexOf(QLatin1Char('\n'), cursor);
+    if (lineEnd < 0)
+        lineEnd = content.size();
+
+    QString updated = content;
+    int delta = 0;
+    if (outdent) {
+        int removed = 0;
+        while (removed < 2 && lineStart + removed < content.size()
+               && content.at(lineStart + removed) == QLatin1Char(' ')) {
+            ++removed;
+        }
+        if (removed == 0 && lineStart < content.size()
+            && content.at(lineStart) == QLatin1Char('\t')) {
+            removed = 1;
+        }
+        if (removed == 0)
+            return cursor;
+        updated.remove(lineStart, removed);
+        delta = -removed;
+    } else {
+        updated.insert(lineStart, QStringLiteral("  "));
+        delta = 2;
+    }
+
+    if (!m_session.updateContent(index, updated))
+        return cursor;
+    Q_UNUSED(lineEnd);
+    return cursor + delta;
+}
+
 QVariantMap DocumentController::applyFormat(int index, int selectionStart, int selectionEnd,
                                             const QString &style)
 {

@@ -170,6 +170,44 @@ private slots:
                  QStringLiteral("beta"));
     }
 
+    void blockMetadataStoresLanguage()
+    {
+        DocumentController controller;
+        controller.createBlankDocument();
+        controller.setBlockType(0, QStringLiteral("code"));
+        controller.setBlockMetadataValue(0, QStringLiteral("language"), QStringLiteral("python"));
+
+        QCOMPARE(controller.blocks()->get(0).value(QStringLiteral("blockType")).toString(),
+                 QStringLiteral("code"));
+        QCOMPARE(controller.blocks()->get(0).value(QStringLiteral("language")).toString(),
+                 QStringLiteral("python"));
+
+        controller.setBlockMetadataValue(0, QStringLiteral("language"), QString());
+        QCOMPARE(controller.blocks()->get(0).value(QStringLiteral("language")).toString(),
+                 QString());
+    }
+
+    void indentListItemOnlyForLists()
+    {
+        DocumentController controller;
+        controller.createBlankDocument();
+        controller.setBlockType(0, QStringLiteral("ul"));
+        controller.setBlockContent(0, QStringLiteral("- one\n- two"));
+
+        const int position = controller.indentListItem(0, 8, false);
+        QCOMPARE(position, 10);
+        QCOMPARE(controller.blocks()->get(0).value(QStringLiteral("content")).toString(),
+                 QStringLiteral("- one\n  - two"));
+
+        const int outdented = controller.indentListItem(0, 10, true);
+        QCOMPARE(outdented, 8);
+        QCOMPARE(controller.blocks()->get(0).value(QStringLiteral("content")).toString(),
+                 QStringLiteral("- one\n- two"));
+
+        controller.setBlockType(0, QStringLiteral("text"));
+        QCOMPARE(controller.indentListItem(0, 0, false), -1);
+    }
+
     void undoRestoresContentThroughController()
     {
         DocumentController controller;

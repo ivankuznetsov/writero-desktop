@@ -21,6 +21,11 @@ Item {
         editingIndex = target
         list.currentIndex = target
         list.positionViewAtIndex(target, ListView.Contain)
+        Qt.callLater(function() {
+            const item = list.itemAtIndex(target)
+            if (item)
+                item.beginEditing(cursor)
+        })
     }
 
     function stopEditing() {
@@ -70,6 +75,7 @@ Item {
 
     ListView {
         id: list
+        objectName: "blockList"
         anchors.fill: parent
         clip: true
         reuseItems: true
@@ -84,6 +90,8 @@ Item {
         property var controller: root.controller
         property int editingIndex: root.editingIndex
         property int focusCursor: root.focusCursor
+        property int dragSourceIndex: -1
+        property int dragTargetIndex: -1
 
         function editBlock(index, cursor) { root.editBlock(index, cursor) }
         function splitBlock(index, cursor) { root.splitBlock(index, cursor) }
@@ -102,6 +110,8 @@ Item {
                                                                                      typeKey,
                                                                                      level)
             onAttachRequested: (index, source) => root.controller.attachMedia(index, source)
+            onLanguageRequested: (index, language) =>
+                root.controller.setBlockMetadataValue(index, "language", language)
         }
 
         onCountChanged: {
@@ -115,6 +125,20 @@ Item {
         visible: list.count === 0
         text: qsTr("This document is empty.")
         color: Theme.textMuted
+    }
+
+    // Drop position while dragging a block by its handle.
+    Rectangle {
+        id: dropIndicator
+        visible: list.dragTargetIndex >= 0 && list.dragTargetIndex !== list.dragSourceIndex
+        x: (root.width - Theme.contentWidth) / 2 - 8
+        width: Math.min(root.width, Theme.contentWidth + 16)
+        height: 2
+        color: Theme.accent
+        y: {
+            const item = list.itemAtIndex(list.dragTargetIndex)
+            return item ? item.y : 0
+        }
     }
 
     SlashMenu {

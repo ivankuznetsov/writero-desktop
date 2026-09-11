@@ -33,15 +33,32 @@ Item {
     signal contentEdited(int index, string text)
     signal typeRequested(int index, string typeKey, string level)
     signal attachRequested(int index, string source)
+    signal languageRequested(int index, string language)
+
+    readonly property alias inputItem: input
 
     width: ListView.view ? ListView.view.width : 0
     implicitHeight: blockBody.height + Theme.blockPaddingV * 2
     height: implicitHeight
+    opacity: ListView.view && ListView.view.dragSourceIndex === index ? 0.5 : 1.0
 
-    onContentChanged: syncText()
+    onContentChanged: {
+        if (delegate.isEditing)
+            syncText()
+    }
     onIsEditingChanged: {
         if (isEditing)
-            input.forceActiveFocus()
+            input.text = delegate.content
+    }
+
+    function beginEditing(cursor) {
+        if (!delegate.isEditing)
+            return
+        if (input.text !== delegate.content)
+            input.text = delegate.content
+        input.forceActiveFocus()
+        input.cursorPosition = cursor >= 0 ? Math.min(cursor, input.text.length)
+                                           : input.text.length
     }
 
     function syncText() {
@@ -59,8 +76,6 @@ Item {
         input.select(result.selectionStart, result.selectionEnd)
         input.cursorPosition = result.cursor
     }
-
-    Component.onCompleted: input.text = delegate.content
 
     HoverHandler {
         id: hoverHandler
@@ -98,6 +113,54 @@ Item {
         z: 3
         visible: delegate.showToolbar
 
+        Item {
+            id: dragHandle
+            width: 22
+            height: 28
+
+            Text {
+                anchors.centerIn: parent
+                text: "\u28FF"
+                color: Theme.textFaint
+                font.pixelSize: 14
+            }
+
+            MouseArea {
+                id: dragArea
+                anchors.fill: parent
+                cursorShape: Qt.SizeVerCursor
+
+                onPressed: {
+                    ListView.view.dragSourceIndex = delegate.index
+                    ListView.view.dragTargetIndex = delegate.index
+                }
+
+                onPositionChanged: {
+                    const point = dragArea.mapToItem(ListView.view, dragArea.mouseX,
+                                                     dragArea.mouseY)
+                    let target = delegate.index
+                    for (let i = 0; i < ListView.view.count; ++i) {
+                        const item = ListView.view.itemAtIndex(i)
+                        if (!item)
+                            continue
+                        if (point.y >= item.y && point.y <= item.y + item.height) {
+                            target = i
+                            break
+                        }
+                    }
+                    ListView.view.dragTargetIndex = target
+                }
+
+                onReleased: {
+                    const target = ListView.view.dragTargetIndex
+                    ListView.view.dragSourceIndex = -1
+                    ListView.view.dragTargetIndex = -1
+                    if (target >= 0 && target !== delegate.index)
+                        delegate.requestMove(delegate.index, target)
+                }
+            }
+        }
+
         ToolButton {
             width: 30
             height: 28
@@ -134,6 +197,103 @@ Item {
                             delegate.typeRequested(delegate.index, modelData.typeKey,
                                                    modelData.level)
                         }
+                    }
+                }
+            }
+        }
+
+        Row {
+            id: formatBar
+            spacing: 0
+            visible: delegate.isEditing && delegate.textual && delegate.blockType !== "code"
+
+            ToolButton {
+                width: 26
+                height: 28
+                text: "B"
+                display: AbstractButton.TextOnly
+                font.bold: true
+                focusPolicy: Qt.NoFocus
+                ToolTip.text: qsTr("Bold (Ctrl+B)")
+                ToolTip.visible: hovered
+                onClicked: delegate.applyFormat("bold")
+            }
+
+            ToolButton {
+                width: 26
+                height: 28
+                text: "I"
+                display: AbstractButton.TextOnly
+                font.italic: true
+                focusPolicy: Qt.NoFocus
+                ToolTip.text: qsTr("Italic (Ctrl+I)")
+                ToolTip.visible: hovered
+                onClicked: delegate.applyFormat("italic")
+            }
+
+            ToolButton {
+                width: 26
+                height: 28
+                text: "</>"
+                display: AbstractButton.TextOnly
+                font.pixelSize: 11
+                focusPolicy: Qt.NoFocus
+                ToolTip.text: qsTr("Inline code (Ctrl+E)")
+                ToolTip.visible: hovered
+                onClicked: delegate.applyFormat("code")
+            }
+
+            ToolButton {
+                width: 26
+                height: 28
+                text: "S"
+                display: AbstractButton.TextOnly
+                font.strikeout: true
+                focusPolicy: Qt.NoFocus
+                ToolTip.text: qsTr("Strikethrough")
+                ToolTip.visible: hovered
+                onClicked: delegate.applyFormat("strikethrough")
+            }
+
+            ToolButton {
+                width: 26
+                height: 28
+                text: "\u26AD"
+                display: AbstractButton.TextOnly
+                focusPolicy: Qt.NoFocus
+                ToolTip.text: qsTr("Link")
+                ToolTip.visible: hovered
+                onClicked: linkDialog.openForSelection()
+            }
+        }
+
+        ToolButton {
+            width: 30
+            height: 28
+            visible: delegate.blockType === "code"
+            text: "{}"
+            display: AbstractButton.TextOnly
+            focusPolicy: Qt.NoFocus
+            ToolTip.text: qsTr("Code language")
+            ToolTip.visible: hovered
+            onClicked: languageMenu.popup()
+
+            Menu {
+                id: languageMenu
+                y: parent.height
+                z: 10
+
+                Repeater {
+                    model: ["plain", "javascript", "typescript", "python", "ruby", "bash",
+                            "json", "html", "css", "sql", "cpp", "rust", "go"]
+                    MenuItem {
+                        required property string modelData
+                        text: modelData === "plain" ? qsTr("Plain text") : modelData
+                        checkable: true
+                        checked: (delegate.language || "plain") === modelData
+                        onClicked: delegate.languageRequested(delegate.index,
+                                                              modelData === "plain" ? ""
+                                                                                    : modelData)
                     }
                 }
             }
@@ -208,19 +368,51 @@ Item {
             opacity: 0.7
         }
 
-        // Text-like blocks share one TextArea. It renders Markdown when not
-        // edited, switches to raw text while editing, and always stores the
-        // raw Markdown string in the document.
-        TextArea {
-            id: input
-            objectName: "blockInput"
-            visible: delegate.textual
+        // Preview of the block's Markdown while it is not being edited.
+        // Keeping a separate read-only field avoids Qt's lossy
+        // Markdown-to-text round trip on format switches.
+        TextEdit {
+            id: preview
+            objectName: "blockPreview"
+            visible: delegate.textual && !delegate.isEditing
             width: parent.width
             padding: 0
             wrapMode: TextEdit.Wrap
-            readOnly: !delegate.isEditing
+            readOnly: true
             selectByMouse: true
-            persistentSelection: false
+            activeFocusOnPress: false
+            text: delegate.content
+            textFormat: delegate.blockType === "heading" || delegate.blockType === "code"
+                          ? TextEdit.PlainText : TextEdit.MarkdownText
+            height: contentHeight
+            font.pixelSize: delegate.blockType === "heading"
+                             ? Theme.headingPixelSize(delegate.headingLevel)
+                             : (delegate.blockType === "code" ? 15 : 17)
+            font.bold: delegate.blockType === "heading"
+            font.family: delegate.blockType === "code" ? Theme.monoFont : ""
+            color: Theme.text
+            selectionColor: Theme.accent
+            selectedTextColor: Theme.background
+
+            onLinkActivated: (link) => Qt.openUrlExternally(link)
+
+            TapHandler {
+                acceptedButtons: Qt.LeftButton
+                onTapped: delegate.requestEdit(delegate.index, -1)
+            }
+        }
+
+        // Raw Markdown editor, shown only while the block is being edited.
+        TextArea {
+            id: input
+            objectName: "blockInput"
+            visible: delegate.textual && delegate.isEditing
+            width: parent.width
+            padding: 0
+            wrapMode: TextEdit.Wrap
+            selectByMouse: true
+            persistentSelection: true
+            textFormat: TextEdit.PlainText
             height: Math.max(contentHeight, Theme.blockMinHeight)
             font.pixelSize: delegate.blockType === "heading"
                              ? Theme.headingPixelSize(delegate.headingLevel)
@@ -230,8 +422,6 @@ Item {
             color: Theme.text
             selectionColor: Theme.accent
             selectedTextColor: Theme.background
-            background: null
-            textFormat: delegate.isEditing ? TextEdit.PlainText : TextEdit.MarkdownText
             placeholderText: delegate.index === 0 ? qsTr("Start writing\u2026") : ""
             placeholderTextColor: Theme.textFaint
 
@@ -249,14 +439,6 @@ Item {
             }
 
             Keys.onPressed: (event) => delegate.handleKey(event)
-
-            TapHandler {
-                acceptedButtons: Qt.LeftButton
-                onTapped: {
-                    if (!delegate.isEditing)
-                        delegate.requestEdit(delegate.index, -1)
-                }
-            }
         }
 
         // Media blocks: preview when available, otherwise an attach control.
@@ -325,6 +507,70 @@ Item {
         onAccepted: delegate.attachRequested(delegate.index, selectedFile.toString())
     }
 
+    Popup {
+        id: linkDialog
+        objectName: "linkDialog"
+        modal: true
+        focus: true
+        width: 320
+        x: Math.round((delegate.width - width) / 2)
+        y: 8
+
+        function openForSelection() {
+            linkField.text = "https://"
+            open()
+            linkField.forceActiveFocus()
+            linkField.selectAll()
+        }
+
+        background: Rectangle {
+            color: Theme.surface
+            border.color: Theme.border
+            radius: Theme.radius
+        }
+
+        contentItem: Column {
+            spacing: 6
+
+            TextField {
+                id: linkField
+                width: parent.width
+                placeholderText: qsTr("https://example.com")
+                selectByMouse: true
+                Keys.onReturnPressed: linkDialog.accept()
+                Keys.onEnterPressed: linkDialog.accept()
+                Keys.onEscapePressed: linkDialog.close()
+            }
+
+            Row {
+                anchors.right: parent.right
+                spacing: 6
+
+                Button {
+                    text: qsTr("Cancel")
+                    onClicked: linkDialog.close()
+                }
+                Button {
+                    text: qsTr("Add link")
+                    onClicked: linkDialog.accept()
+                }
+            }
+        }
+
+        function accept() {
+            let url = linkField.text.trim()
+            if (url === "")
+                return
+            if (!/^https?:\/\//.test(url))
+                url = "https://" + url
+            const result = ListView.view.controller.applyLink(delegate.index,
+                                                              input.selectionStart,
+                                                              input.selectionEnd, url)
+            delegate.applySelectionResult(result)
+            close()
+        }
+    }
+
     function applyFormat(style) {
         const result = ListView.view.controller.applyFormat(delegate.index,
                                                             input.selectionStart,
@@ -348,6 +594,21 @@ Item {
         } else if (event.key === Qt.Key_Escape) {
             delegate.requestStopEdit()
             event.accepted = true
+        } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+            const outdent = event.key === Qt.Key_Backtab || shift
+            if (delegate.blockType === "ul" || delegate.blockType === "ol") {
+                const position = ListView.view.controller.indentListItem(delegate.index,
+                                                                         input.cursorPosition,
+                                                                         outdent)
+                if (position >= 0) {
+                    input.cursorPosition = position
+                    event.accepted = true
+                }
+            } else if (!outdent) {
+                input.insert(input.cursorPosition,
+                             delegate.blockType === "code" ? "    " : "  ")
+                event.accepted = true
+            }
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             handleEnter(shift, event)
         } else if (event.key === Qt.Key_Backspace && input.cursorPosition === 0
