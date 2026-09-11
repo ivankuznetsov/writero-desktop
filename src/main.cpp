@@ -1,5 +1,6 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QQmlError>
 
 #include "core/AppInfo.h"
 
@@ -13,6 +14,12 @@ int main(int argc, char *argv[])
     app.setDesktopFileName(QString::fromLatin1(writero::app::DesktopFileName));
 
     QQmlApplicationEngine engine;
+    QObject::connect(
+        &engine, &QQmlApplicationEngine::warnings, &app,
+        [](const QList<QQmlError> &warnings) {
+            for (const QQmlError &warning : warnings)
+                qWarning().noquote() << warning.toString();
+        });
     QObject::connect(
         &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
         []() { QCoreApplication::exit(1); }, Qt::QueuedConnection);

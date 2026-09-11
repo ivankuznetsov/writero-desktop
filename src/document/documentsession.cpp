@@ -328,7 +328,7 @@ void DocumentSession::ensureTrailingEmptyBlock(const QString &source)
     change.source = source;
 
     applyInsert(index, block);
-    pushChange(change, false);
+    recordJournalOnly(change);
 }
 
 void DocumentSession::applyChange(const DocumentChange &change, bool forward)
@@ -440,6 +440,14 @@ void DocumentSession::pushChange(DocumentChange change, bool coalesce)
 
     m_sinceLastChange.restart();
     emit historyChanged();
+    setDirty(true);
+}
+
+void DocumentSession::recordJournalOnly(const DocumentChange &change)
+{
+    DocumentChange entry = change;
+    entry.at = QDateTime::currentDateTimeUtc();
+    m_journal.append(entry);
     setDirty(true);
 }
 

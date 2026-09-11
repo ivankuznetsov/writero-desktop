@@ -90,6 +90,7 @@ private:
     void applyTitle(const QString &title);
 
     void pushChange(DocumentChange change, bool coalesce);
+    void recordJournalOnly(const DocumentChange &change);
     bool canCoalesce(const DocumentChange &previous, const DocumentChange &next) const;
     DocumentChange invert(const DocumentChange &change) const;
 

@@ -49,20 +49,42 @@ target_link_libraries(writero_core PUBLIC
 )
 target_compile_definitions(writero_core PUBLIC WRITERO_VERSION="${PROJECT_VERSION}")
 
-set(WRITERO_QML_FILES
-    qml/Main.qml
+# The QML user interface lives in a static library so that both the
+# application and the Qt Quick tests load the same components. The controller
+# and list model are part of the module because they are exposed to QML.
+add_library(writero_ui STATIC
+    src/editor/blocklistmodel.h
+    src/editor/blocklistmodel.cpp
+    src/editor/documentcontroller.h
+    src/editor/documentcontroller.cpp
+    src/editor/formatactions.h
+    src/editor/formatactions.cpp
+)
+target_link_libraries(writero_ui PUBLIC writero_core)
+target_include_directories(writero_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/editor)
+
+set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
+qt_add_qml_module(writero_ui
+    URI Writero
+    VERSION 0.1
+    SOURCES
+        src/editor/blocklistmodel.h
+        src/editor/documentcontroller.h
+    QML_FILES
+        qml/Main.qml
+        qml/Theme.qml
+        qml/editor/BlockDelegate.qml
+        qml/editor/BlockEditor.qml
+        qml/editor/SlashMenu.qml
 )
 
 qt_add_executable(writero-desktop
     src/main.cpp
 )
-target_link_libraries(writero-desktop PRIVATE writero_core)
-
-qt_add_qml_module(writero-desktop
-    URI Writero
-    VERSION 0.1
-    QML_FILES
-        ${WRITERO_QML_FILES}
+target_link_libraries(writero-desktop PRIVATE
+    writero_core
+    writero_uiplugin
 )
 
 if(WRITERO_BUILD_TESTS)

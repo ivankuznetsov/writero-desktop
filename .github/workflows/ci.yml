@@ -32,4 +32,4 @@ jobs:
       - name: QML lint
         run: |
           shopt -s globstar
-          qmllint -I build --bare qml/**/*.qml
+          qmllint -I build qml/**/*.qml
