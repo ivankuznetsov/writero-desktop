@@ -85,6 +85,8 @@ add_library(writero_ui STATIC
     src/ai/aicontroller.cpp
     src/ai/providerregistry.h
     src/ai/providerregistry.cpp
+    src/cloud/accountsession.h
+    src/cloud/accountsession.cpp
     src/editor/blocklistmodel.h
     src/editor/blocklistmodel.cpp
     src/editor/documentcontroller.h
@@ -99,6 +101,7 @@ add_library(writero_ui STATIC
 target_link_libraries(writero_ui PUBLIC writero_core)
 target_include_directories(writero_ui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cloud
     ${CMAKE_CURRENT_SOURCE_DIR}/src/editor
     ${CMAKE_CURRENT_SOURCE_DIR}/src/storage
 )
@@ -111,6 +114,7 @@ qt_add_qml_module(writero_ui
     SOURCES
         src/ai/aicontroller.h
         src/ai/providerregistry.h
+        src/cloud/accountsession.h
         src/editor/blocklistmodel.h
         src/editor/documentcontroller.h
         src/editor/documentlibrarymodel.h
@@ -123,6 +127,7 @@ qt_add_qml_module(writero_ui
         qml/editor/BlockEditor.qml
         qml/editor/SlashMenu.qml
         qml/library/DocumentSidebar.qml
+        qml/settings/Account.qml
         qml/settings/Providers.qml
 )
 

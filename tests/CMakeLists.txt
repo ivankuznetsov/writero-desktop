@@ -25,6 +25,13 @@ set_tests_properties(tst_aicontroller PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_RUNTIME_DIR=${CMAKE_BINARY_DIR}/runtime"
 )
 
+add_executable(tst_accountsession cloud/tst_accountsession.cpp)
+target_link_libraries(tst_accountsession PRIVATE writero_ui writero_uiplugin Qt6::Test)
+add_test(NAME tst_accountsession COMMAND tst_accountsession)
+set_tests_properties(tst_accountsession PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_RUNTIME_DIR=${CMAKE_BINARY_DIR}/runtime"
+)
+
 add_executable(tst_providerregistry ai/tst_providerregistry.cpp)
 target_link_libraries(tst_providerregistry PRIVATE writero_ui writero_uiplugin Qt6::Test)
 add_test(NAME tst_providerregistry COMMAND tst_providerregistry)

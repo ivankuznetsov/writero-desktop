@@ -83,5 +83,6 @@ claiming support.
 | U5 | `tests/ai/tst_aiclient.cpp` (stub server), `tst_providerregistry.cpp` |
 | U6 | `tests/ai/tst_textactions.cpp`, `tst_aicontroller.cpp` |
 | U7 | on-demand image generation and explanation with catalog-based capability filtering (`tst_modelcatalog`, `tst_aiclient`, `tst_aicontroller`); research is a cloud function delivered as a synced article |
-| U8–U12 | not implemented; service-side work in the Writero repository |
+| U8 | server: `test/integration/desktop_oauth_test.rb`, `capabilities_controller_test.rb`; desktop: `tests/cloud/tst_accountsession.cpp` |
+| U9–U12 | not implemented; service-side sync, conflicts, and hosted credits |
 | U13 | `docs/verification.md`, `packaging/`, install rules in `CMakeLists.txt` |

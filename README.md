@@ -25,14 +25,16 @@ Implemented so far:
 - [x] U7 — Image generation and explanation parity with per-model capability
   discovery (research and scheduled research are cloud functions that arrive
   as synced articles, so they are not local operations)
-- [ ] U8–U12 — Writero service API and sync (service-side work in the
-  Writero Rails repository)
+- [x] U8 — Service OAuth and capability API (desktop sign-in, desktop-scoped
+  tokens, `/api/desktop/v1/capabilities`)
+- [ ] U9–U12 — Structured sync, conflicts, hosted credits, and cloud parity
+  (service-side work in the Writero Rails repository)
 - [x] U13 — Open-source packaging and Omarchy acceptance artifacts
 
 The remaining work is the cloud phase described in the plan: the structured
-`/api/desktop/v1` service, OAuth account connection, change-log sync and
-conflict resolution, and hosted AI credits. Those units change the Writero
-service and are not part of this repository.
+`/api/desktop/v1` document/change/media endpoints, the desktop sync engine
+with conflict resolution, and hosted AI credits. U8 already provides the
+account connection and capability discovery those units build on.
 
 ## Building
 

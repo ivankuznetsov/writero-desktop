@@ -46,6 +46,16 @@ ApplicationWindow {
         document: document
     }
 
+    AccountSession {
+        id: account
+        Component.onCompleted: restoreSession()
+    }
+
+    Account {
+        id: accountDialog
+        session: account
+    }
+
     Providers {
         id: providersDialog
         registry: providers
@@ -156,6 +166,16 @@ ApplicationWindow {
 
             Item {
                 Layout.fillWidth: true
+            }
+
+            ToolButton {
+                text: account.connected ? "\u25C9" : "\u25CB"
+                display: AbstractButton.TextOnly
+                ToolTip.text: account.connected
+                              ? qsTr("Connected as %1").arg(account.accountEmail)
+                              : qsTr("Writero account")
+                ToolTip.visible: hovered
+                onClicked: accountDialog.open()
             }
 
             ToolButton {
