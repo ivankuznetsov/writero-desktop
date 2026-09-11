@@ -101,9 +101,7 @@ Item {
             onTypeRequested: (index, typeKey, level) => root.controller.setBlockType(index,
                                                                                      typeKey,
                                                                                      level)
-            onAttachRequested: (index, source) => root.controller.setBlockMetadataValue(index,
-                                                                                        "src",
-                                                                                        source)
+            onAttachRequested: (index, source) => root.controller.attachMedia(index, source)
         }
 
         onCountChanged: {

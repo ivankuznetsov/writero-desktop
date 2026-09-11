@@ -2,10 +2,12 @@
 
 #include <QObject>
 #include <QQmlEngine>
+#include <QTimer>
 #include <QVariantMap>
 
 #include "document/documentsession.h"
 #include "editor/blocklistmodel.h"
+#include "storage/workspace.h"
 
 namespace writero {
 
@@ -19,6 +21,7 @@ class DocumentController : public QObject
     Q_OBJECT
     QML_ELEMENT
     Q_PROPERTY(BlockListModel *blocks READ blocks CONSTANT)
+    Q_PROPERTY(Workspace *workspace READ workspace WRITE setWorkspace NOTIFY workspaceChanged)
     Q_PROPERTY(QString documentId READ documentId NOTIFY loaded)
     Q_PROPERTY(QString title READ title NOTIFY titleChanged)
     Q_PROPERTY(int wordCount READ wordCount NOTIFY countsChanged)
@@ -26,6 +29,7 @@ class DocumentController : public QObject
     Q_PROPERTY(bool dirty READ isDirty NOTIFY dirtyChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
+    Q_PROPERTY(QString saveError READ saveError NOTIFY saveErrorChanged)
 
 public:
     explicit DocumentController(QObject *parent = nullptr);
@@ -36,6 +40,9 @@ public:
 
     void load(const Document &document);
 
+    Workspace *workspace() const { return m_workspace; }
+    void setWorkspace(Workspace *workspace);
+
     QString documentId() const { return m_session.id(); }
     QString title() const { return m_session.document().title; }
     int wordCount() const { return m_session.document().wordCount(); }
@@ -43,13 +50,27 @@ public:
     bool isDirty() const { return m_session.isDirty(); }
     bool canUndo() const { return m_session.canUndo(); }
     bool canRedo() const { return m_session.canRedo(); }
+    QString saveError() const { return m_saveError; }
 
     Q_INVOKABLE void createBlankDocument(const QString &title = QString());
     Q_INVOKABLE void setTitle(const QString &title);
 
+    /// Loads a stored document. Any pending changes to the current document
+    /// are saved first.
+    Q_INVOKABLE bool openDocument(const QString &documentId);
+    Q_INVOKABLE QString createDocument(const QString &title = QString());
+    Q_INVOKABLE bool saveNow();
+    Q_INVOKABLE bool saveIfDirty();
+    Q_INVOKABLE bool trashCurrentDocument();
+
     Q_INVOKABLE void setBlockContent(int index, const QString &content, bool coalesce = false);
     Q_INVOKABLE void setBlockType(int index, const QString &typeKey, const QString &headingLevel = QString());
     Q_INVOKABLE void setBlockMetadataValue(int index, const QString &key, const QVariant &value);
+
+    /// Copies a local file into the workspace media store and attaches it to
+    /// the block, converting the block to a media block.
+    Q_INVOKABLE bool attachMedia(int index, const QString &source);
+    Q_INVOKABLE QString mediaUrl(qint64 mediaId) const;
     Q_INVOKABLE int insertBlockAfter(int index);
     Q_INVOKABLE int appendBlock();
     Q_INVOKABLE void removeBlock(int index);
@@ -77,6 +98,9 @@ public:
 
 signals:
     void loaded();
+    void saved();
+    void workspaceChanged();
+    void saveErrorChanged();
     void titleChanged(const QString &title);
     void countsChanged();
     void dirtyChanged(bool dirty);
@@ -84,9 +108,15 @@ signals:
 
 private:
     void connectSession();
+    void scheduleAutosave();
+    void setSaveError(const QString &error);
 
     DocumentSession m_session;
     BlockListModel m_blocks;
+    Workspace *m_workspace = nullptr;
+    QTimer m_autosave;
+    QString m_saveError;
 };
 
 } // namespace writero
+

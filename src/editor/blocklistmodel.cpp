@@ -55,6 +55,15 @@ void BlockListModel::attachSession()
             [this] { endResetModel(); });
 }
 
+void BlockListModel::setMediaResolver(std::function<QString(qint64)> resolver)
+{
+    m_mediaResolver = std::move(resolver);
+    if (!m_session || m_session->document().blocks.isEmpty())
+        return;
+    emit dataChanged(index(0), index(m_session->document().blocks.size() - 1),
+                     {MediaUrlRole});
+}
+
 int BlockListModel::rowCount(const QModelIndex &parent) const
 {
     if (parent.isValid() || !m_session)
@@ -87,6 +96,8 @@ QVariant BlockListModel::data(const QModelIndex &index, int role) const
         return block.mediaAlt();
     case MediaIdRole:
         return block.mediaId;
+    case MediaUrlRole:
+        return block.mediaId > 0 && m_mediaResolver ? m_mediaResolver(block.mediaId) : QString();
     case RevisionRole:
         return block.revision;
     case EmptyRole:
@@ -109,6 +120,7 @@ QHash<int, QByteArray> BlockListModel::roleNames() const
         {MediaSourceRole, "mediaSource"},
         {MediaAltRole, "mediaAlt"},
         {MediaIdRole, "mediaId"},
+        {MediaUrlRole, "mediaUrl"},
         {RevisionRole, "revision"},
         {EmptyRole, "isEmpty"},
         {TextualRole, "textual"},

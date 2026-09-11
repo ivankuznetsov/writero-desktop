@@ -15,6 +15,7 @@ Item {
     required property string language
     required property string mediaSource
     required property string mediaAlt
+    required property string mediaUrl
     required property bool textual
 
     readonly property bool isEditing: ListView.view && ListView.view.editingIndex === index
@@ -71,8 +72,10 @@ Item {
         onClicked: delegate.requestEdit(delegate.index, -1)
     }
 
-    // Hover toolbar, floating in the left gutter when there is room, above
-    // the content otherwise.
+    // Hover toolbar: in the left gutter when it fits, floating above the
+    // block otherwise so it never covers the text.
+    readonly property bool toolbarAbove: (delegate.contentX - 6) < toolbar.width + 4
+
     Rectangle {
         id: toolbarBackground
         x: toolbar.x - 2
@@ -88,8 +91,9 @@ Item {
 
     Row {
         id: toolbar
-        y: 2
-        x: Math.max(4, delegate.contentX - width - 6)
+        y: delegate.toolbarAbove ? -height + 6 : 2
+        x: delegate.toolbarAbove ? delegate.contentX
+                                 : Math.max(4, delegate.contentX - width - 6)
         spacing: 0
         z: 3
         visible: delegate.showToolbar
@@ -262,18 +266,21 @@ Item {
             width: parent.width
             height: Math.max(mediaImage.height, mediaPlaceholder.height, Theme.blockMinHeight)
 
+            readonly property string resolvedMediaSource:
+                delegate.mediaUrl !== "" ? delegate.mediaUrl : delegate.mediaSource
+
             Image {
                 id: mediaImage
                 anchors.horizontalCenter: parent.horizontalCenter
-                source: delegate.mediaSource
+                source: mediaBody.resolvedMediaSource
                 sourceSize.width: Math.min(parent.width, 640)
                 fillMode: Image.PreserveAspectFit
-                visible: delegate.mediaSource !== "" && status !== Image.Error
+                visible: mediaBody.resolvedMediaSource !== "" && status !== Image.Error
             }
 
             Rectangle {
                 id: mediaPlaceholder
-                visible: delegate.mediaSource === "" || mediaImage.status === Image.Error
+                visible: mediaBody.resolvedMediaSource === "" || mediaImage.status === Image.Error
                 width: parent.width
                 height: 120
                 color: Theme.surface

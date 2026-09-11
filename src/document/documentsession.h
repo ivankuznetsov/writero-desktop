@@ -36,6 +36,7 @@ public:
     /// Changes applied since the last `drainJournal()`.
     const QVector<DocumentChange> &journal() const { return m_journal; }
     QVector<DocumentChange> drainJournal();
+    void clearJournal() { m_journal.clear(); }
 
     /// Mutations return true when the document actually changed.
     bool setTitle(const QString &title, bool coalesce = false);

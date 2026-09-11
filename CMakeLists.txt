@@ -38,6 +38,11 @@ add_library(writero_core STATIC
     src/document/documentsession.cpp
     src/document/listcontent.h
     src/document/listcontent.cpp
+    src/storage/mediastore.h
+    src/storage/mediastore.cpp
+    src/storage/revision.h
+    src/storage/workspacestore.h
+    src/storage/workspacestore.cpp
 )
 target_include_directories(writero_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(writero_core PUBLIC
@@ -57,11 +62,18 @@ add_library(writero_ui STATIC
     src/editor/blocklistmodel.cpp
     src/editor/documentcontroller.h
     src/editor/documentcontroller.cpp
+    src/editor/documentlibrarymodel.h
+    src/editor/documentlibrarymodel.cpp
     src/editor/formatactions.h
     src/editor/formatactions.cpp
+    src/storage/workspace.h
+    src/storage/workspace.cpp
 )
 target_link_libraries(writero_ui PUBLIC writero_core)
-target_include_directories(writero_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/editor)
+target_include_directories(writero_ui PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/editor
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/storage
+)
 
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
@@ -71,12 +83,15 @@ qt_add_qml_module(writero_ui
     SOURCES
         src/editor/blocklistmodel.h
         src/editor/documentcontroller.h
+        src/editor/documentlibrarymodel.h
+        src/storage/workspace.h
     QML_FILES
         qml/Main.qml
         qml/Theme.qml
         qml/editor/BlockDelegate.qml
         qml/editor/BlockEditor.qml
         qml/editor/SlashMenu.qml
+        qml/library/DocumentSidebar.qml
 )
 
 qt_add_executable(writero-desktop

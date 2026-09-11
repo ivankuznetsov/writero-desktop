@@ -17,7 +17,7 @@ service repository at
 Implemented so far:
 
 - [x] U1 — Native project foundation and editor feasibility gate
-- [ ] U2 — Durable local documents, media, and revision storage
+- [x] U2 — Durable local documents, media, and revision storage
 - [ ] U3 — Complete block editing and document navigation
 - [ ] U4 — Native import/export and media history
 - [ ] U5 — Provider connections and local AI execution

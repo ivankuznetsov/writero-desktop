@@ -1,0 +1,671 @@
+#include "storage/workspacestore.h"
+
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSet>
+#include <QSqlError>
+#include <QSqlQuery>
+#include <QVariant>
+#include <QUuid>
+
+namespace writero {
+
+namespace {
+
+QString toJson(const QVariantMap &map)
+{
+    return QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(map)).toJson(QJsonDocument::Compact));
+}
+
+QVariantMap fromJson(const QString &json)
+{
+    const QJsonDocument document = QJsonDocument::fromJson(json.toUtf8());
+    return document.object().toVariantMap();
+}
+
+QString nowIso()
+{
+    return QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+}
+
+} // namespace
+
+WorkspaceStore::WorkspaceStore()
+    : m_connectionName(QStringLiteral("writero-workspace-%1")
+                           .arg(QUuid::createUuid().toString(QUuid::WithoutBraces)))
+{
+}
+
+WorkspaceStore::~WorkspaceStore()
+{
+    close();
+}
+
+bool WorkspaceStore::open(const QString &databasePath, QString *error)
+{
+    close();
+
+    m_database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connectionName);
+    m_database.setDatabaseName(databasePath);
+    if (!m_database.open()) {
+        m_lastError = m_database.lastError().text();
+        if (error)
+            *error = m_lastError;
+        return false;
+    }
+
+    QSqlQuery pragma(m_database);
+    pragma.exec(QStringLiteral("PRAGMA foreign_keys = ON"));
+    pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"));
+    pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
+
+    if (!migrate()) {
+        if (error)
+            *error = m_lastError;
+        return false;
+    }
+    return true;
+}
+
+void WorkspaceStore::close()
+{
+    if (m_database.isOpen())
+        m_database.close();
+    m_database = QSqlDatabase();
+    if (QSqlDatabase::contains(m_connectionName))
+        QSqlDatabase::removeDatabase(m_connectionName);
+}
+
+bool WorkspaceStore::isOpen() const
+{
+    return m_database.isOpen();
+}
+
+bool WorkspaceStore::migrate()
+{
+    QSqlQuery query(m_database);
+    if (!query.exec(QStringLiteral("PRAGMA user_version"))) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    query.next();
+    const int version = query.value(0).toInt();
+
+    if (version >= 1)
+        return true;
+
+    const QStringList statements = {
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS documents ("
+            " id TEXT PRIMARY KEY,"
+            " title TEXT NOT NULL DEFAULT '',"
+            " revision INTEGER NOT NULL DEFAULT 0,"
+            " created_at TEXT NOT NULL,"
+            " updated_at TEXT NOT NULL,"
+            " cloud_id TEXT,"
+            " cloud_state TEXT NOT NULL DEFAULT 'local',"
+            " trashed_at TEXT)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS media ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " sha256 TEXT NOT NULL UNIQUE,"
+            " filename TEXT NOT NULL,"
+            " mime_type TEXT NOT NULL,"
+            " byte_size INTEGER NOT NULL,"
+            " created_at TEXT NOT NULL)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS blocks ("
+            " id TEXT PRIMARY KEY,"
+            " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+            " position INTEGER NOT NULL,"
+            " block_type TEXT NOT NULL,"
+            " content TEXT NOT NULL DEFAULT '',"
+            " metadata TEXT NOT NULL DEFAULT '{}',"
+            " media_id INTEGER REFERENCES media(id) ON DELETE SET NULL,"
+            " revision INTEGER NOT NULL DEFAULT 1)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_blocks_document"
+                       " ON blocks(document_id, position)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS revisions ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+            " block_id TEXT NOT NULL,"
+            " event TEXT NOT NULL,"
+            " source TEXT NOT NULL DEFAULT 'local',"
+            " content TEXT,"
+            " block_type TEXT,"
+            " metadata TEXT,"
+            " created_at TEXT NOT NULL)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_revisions_document"
+                       " ON revisions(document_id, block_id, created_at)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS media_versions ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " block_id TEXT NOT NULL,"
+            " media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,"
+            " created_at TEXT NOT NULL)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS pending_operations ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " document_id TEXT NOT NULL,"
+            " operation_id TEXT NOT NULL UNIQUE,"
+            " kind TEXT NOT NULL,"
+            " payload TEXT NOT NULL,"
+            " created_at TEXT NOT NULL,"
+            " state TEXT NOT NULL DEFAULT 'pending')"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS settings ("
+            " key TEXT PRIMARY KEY,"
+            " value TEXT NOT NULL)"),
+    };
+
+    if (!m_database.transaction()) {
+        m_lastError = m_database.lastError().text();
+        return false;
+    }
+
+    for (const QString &statement : statements) {
+        if (!query.exec(statement)) {
+            m_lastError = query.lastError().text();
+            m_database.rollback();
+            return false;
+        }
+    }
+
+    if (!query.exec(QStringLiteral("PRAGMA user_version = 1"))) {
+        m_lastError = query.lastError().text();
+        m_database.rollback();
+        return false;
+    }
+
+    if (!m_database.commit()) {
+        m_lastError = m_database.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool WorkspaceStore::createDocument(const Document &document, QString *error)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO documents (id, title, revision, created_at, updated_at, cloud_id, cloud_state)"
+        " VALUES (:id, :title, :revision, :created_at, :updated_at, :cloud_id, :cloud_state)"));
+    query.bindValue(QStringLiteral(":id"), document.id);
+    query.bindValue(QStringLiteral(":title"), document.title);
+    query.bindValue(QStringLiteral(":revision"), document.revision);
+    query.bindValue(QStringLiteral(":created_at"), nowIso());
+    query.bindValue(QStringLiteral(":updated_at"), nowIso());
+    query.bindValue(QStringLiteral(":cloud_id"), document.cloudId);
+    query.bindValue(QStringLiteral(":cloud_state"), document.cloudState);
+
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        if (error)
+            *error = m_lastError;
+        return false;
+    }
+    return true;
+}
+
+bool WorkspaceStore::saveDocument(const Document &document, const QVector<DocumentChange> &changes,
+                                  QString *error)
+{
+    if (!m_database.transaction()) {
+        m_lastError = m_database.lastError().text();
+        if (error)
+            *error = m_lastError;
+        return false;
+    }
+
+    QSqlQuery query(m_database);
+
+    const QString timestamp = nowIso();
+    query.prepare(QStringLiteral(
+        "UPDATE documents SET title = :title, revision = :revision, updated_at = :updated_at,"
+        " cloud_id = :cloud_id, cloud_state = :cloud_state WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), document.id);
+    query.bindValue(QStringLiteral(":title"), document.title);
+    query.bindValue(QStringLiteral(":revision"), document.revision);
+    query.bindValue(QStringLiteral(":updated_at"), timestamp);
+    query.bindValue(QStringLiteral(":cloud_id"), document.cloudId);
+    query.bindValue(QStringLiteral(":cloud_state"), document.cloudState);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        m_database.rollback();
+        if (error)
+            *error = m_lastError;
+        return false;
+    }
+
+    if (query.numRowsAffected() == 0) {
+        query.prepare(QStringLiteral(
+            "INSERT INTO documents (id, title, revision, created_at, updated_at, cloud_id,"
+            " cloud_state) VALUES (:id, :title, :revision, :created_at, :updated_at, :cloud_id,"
+            " :cloud_state)"));
+        query.bindValue(QStringLiteral(":id"), document.id);
+        query.bindValue(QStringLiteral(":title"), document.title);
+        query.bindValue(QStringLiteral(":revision"), document.revision);
+        query.bindValue(QStringLiteral(":created_at"), timestamp);
+        query.bindValue(QStringLiteral(":updated_at"), timestamp);
+        query.bindValue(QStringLiteral(":cloud_id"), document.cloudId);
+        query.bindValue(QStringLiteral(":cloud_state"), document.cloudState);
+        if (!query.exec()) {
+            m_lastError = query.lastError().text();
+            m_database.rollback();
+            if (error)
+                *error = m_lastError;
+            return false;
+        }
+    }
+
+    query.prepare(QStringLiteral("DELETE FROM blocks WHERE document_id = :document_id"));
+    query.bindValue(QStringLiteral(":document_id"), document.id);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        m_database.rollback();
+        if (error)
+            *error = m_lastError;
+        return false;
+    }
+
+    query.prepare(QStringLiteral(
+        "INSERT INTO blocks (id, document_id, position, block_type, content, metadata, media_id,"
+        " revision) VALUES (:id, :document_id, :position, :block_type, :content, :metadata,"
+        " :media_id, :revision)"));
+    for (int position = 0; position < document.blocks.size(); ++position) {
+        const Block &block = document.blocks.at(position);
+        query.bindValue(QStringLiteral(":id"), block.id);
+        query.bindValue(QStringLiteral(":document_id"), document.id);
+        query.bindValue(QStringLiteral(":position"), position);
+        query.bindValue(QStringLiteral(":block_type"), blocktype::toKey(block.type));
+        // A default-constructed QString binds as NULL, which violates the
+        // NOT NULL constraint; empty content must be stored as an empty string.
+        query.bindValue(QStringLiteral(":content"),
+                        block.content.isNull() ? QString::fromLatin1("") : block.content);
+        query.bindValue(QStringLiteral(":metadata"), toJson(block.metadata));
+        query.bindValue(QStringLiteral(":media_id"), block.mediaId > 0 ? block.mediaId
+                                                                       : QVariant());
+        query.bindValue(QStringLiteral(":revision"), block.revision);
+        if (!query.exec()) {
+            m_lastError = query.lastError().text();
+            m_database.rollback();
+            if (error)
+                *error = m_lastError;
+            return false;
+        }
+    }
+
+    for (const DocumentChange &change : changes) {
+        if (!insertRevision(change, document.id, error)) {
+            m_database.rollback();
+            return false;
+        }
+    }
+
+    if (!m_database.commit()) {
+        m_lastError = m_database.lastError().text();
+        if (error)
+            *error = m_lastError;
+        return false;
+    }
+    return true;
+}
+
+bool WorkspaceStore::insertRevision(const DocumentChange &change, const QString &documentId,
+                                    QString *error)
+{
+    QSqlQuery query(m_database);
+
+    const auto insertOne = [&](const QString &blockId, const QString &event, const QString &source,
+                               const Block &block) -> bool {
+        query.prepare(QStringLiteral(
+            "INSERT INTO revisions (document_id, block_id, event, source, content, block_type,"
+            " metadata, created_at) VALUES (:document_id, :block_id, :event, :source, :content,"
+            " :block_type, :metadata, :created_at)"));
+        query.bindValue(QStringLiteral(":document_id"), documentId);
+        query.bindValue(QStringLiteral(":block_id"), blockId);
+        query.bindValue(QStringLiteral(":event"), event);
+        query.bindValue(QStringLiteral(":source"), source);
+        query.bindValue(QStringLiteral(":content"), block.content);
+        query.bindValue(QStringLiteral(":block_type"), blocktype::toKey(block.type));
+        query.bindValue(QStringLiteral(":metadata"), toJson(block.metadata));
+        query.bindValue(QStringLiteral(":created_at"), nowIso());
+        if (!query.exec()) {
+            m_lastError = query.lastError().text();
+            if (error)
+                *error = m_lastError;
+            return false;
+        }
+        return true;
+    };
+
+    switch (change.kind) {
+    case DocumentChange::Kind::Title:
+        return true; // Titles are not block history.
+    case DocumentChange::Kind::InsertBlock:
+        return insertOne(change.blockId, QStringLiteral("create"), change.source, change.afterBlock);
+    case DocumentChange::Kind::RemoveBlock:
+        return insertOne(change.blockId, QStringLiteral("destroy"), change.source, change.beforeBlock);
+    case DocumentChange::Kind::UpdateBlock:
+        return insertOne(change.blockId, QStringLiteral("update"), change.source, change.afterBlock);
+    case DocumentChange::Kind::MoveBlock:
+        return true; // Position changes are metadata, not content history.
+    case DocumentChange::Kind::ReplaceAll: {
+        QSet<QString> afterIds;
+        for (const Block &block : change.afterBlocks) {
+            afterIds.insert(block.id);
+            if (!insertOne(block.id, QStringLiteral("update"), change.source, block))
+                return false;
+        }
+        for (const Block &block : change.beforeBlocks) {
+            if (afterIds.contains(block.id))
+                continue;
+            if (!insertOne(block.id, QStringLiteral("destroy"), change.source, block))
+                return false;
+        }
+        return true;
+    }
+    }
+    return true;
+}
+
+Document WorkspaceStore::loadDocument(const QString &documentId, QString *error)
+{
+    Document document;
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("SELECT id, title, revision, created_at, updated_at, cloud_id,"
+                                 " cloud_state FROM documents WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), documentId);
+    if (!query.exec() || !query.next()) {
+        m_lastError = query.lastError().text().isEmpty() ? QStringLiteral("Document not found")
+                                                         : query.lastError().text();
+        if (error)
+            *error = m_lastError;
+        return document;
+    }
+
+    document.id = query.value(0).toString();
+    document.title = query.value(1).toString();
+    document.revision = query.value(2).toLongLong();
+    document.createdAt = QDateTime::fromString(query.value(3).toString(), Qt::ISODateWithMs);
+    document.updatedAt = QDateTime::fromString(query.value(4).toString(), Qt::ISODateWithMs);
+    document.cloudId = query.value(5).toString();
+    document.cloudState = query.value(6).toString();
+
+    QSqlQuery blocks(m_database);
+    blocks.prepare(QStringLiteral(
+        "SELECT id, block_type, content, metadata, media_id, revision FROM blocks"
+        " WHERE document_id = :document_id ORDER BY position"));
+    blocks.bindValue(QStringLiteral(":document_id"), documentId);
+    if (!blocks.exec()) {
+        m_lastError = blocks.lastError().text();
+        if (error)
+            *error = m_lastError;
+        return document;
+    }
+
+    while (blocks.next()) {
+        Block block;
+        block.id = blocks.value(0).toString();
+        block.type = blocktype::fromKey(blocks.value(1).toString());
+        block.content = blocks.value(2).toString();
+        block.metadata = fromJson(blocks.value(3).toString());
+        block.mediaId = blocks.value(4).toLongLong();
+        block.revision = blocks.value(5).toInt();
+        document.blocks.append(block);
+    }
+
+    return document;
+}
+
+QVector<DocumentSummary> WorkspaceStore::listDocuments(bool trashed, const QString &queryText)
+{
+    QVector<DocumentSummary> result;
+
+    QString sql = QStringLiteral(
+        "SELECT d.id, d.title, d.created_at, d.updated_at, d.trashed_at, d.revision,"
+        " (SELECT content FROM blocks b WHERE b.document_id = d.id AND b.content != ''"
+        "  ORDER BY b.position LIMIT 1)"
+        " FROM documents d");
+    QStringList conditions;
+    if (trashed)
+        conditions << QStringLiteral("d.trashed_at IS NOT NULL");
+    else
+        conditions << QStringLiteral("d.trashed_at IS NULL");
+    if (!queryText.isEmpty()) {
+        conditions << QStringLiteral(
+            "(d.title LIKE :query OR EXISTS (SELECT 1 FROM blocks b2 WHERE b2.document_id = d.id"
+            " AND b2.content LIKE :query))");
+    }
+    sql += QStringLiteral(" WHERE ") + conditions.join(QStringLiteral(" AND "));
+    sql += QStringLiteral(" ORDER BY d.updated_at DESC");
+
+    QSqlQuery query(m_database);
+    query.prepare(sql);
+    if (!queryText.isEmpty())
+        query.bindValue(QStringLiteral(":query"), QStringLiteral("%") + queryText + QStringLiteral("%"));
+
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return result;
+    }
+
+    while (query.next()) {
+        DocumentSummary summary;
+        summary.id = query.value(0).toString();
+        summary.title = query.value(1).toString();
+        summary.createdAt = QDateTime::fromString(query.value(2).toString(), Qt::ISODateWithMs);
+        summary.updatedAt = QDateTime::fromString(query.value(3).toString(), Qt::ISODateWithMs);
+        summary.trashed = !query.value(4).isNull();
+        summary.revision = query.value(5).toInt();
+        const QString preview = query.value(6).toString().simplified();
+        summary.preview = preview.size() > 100 ? preview.left(99) + QChar(0x2026) : preview;
+        result.append(summary);
+    }
+    return result;
+}
+
+bool WorkspaceStore::setDocumentTrashed(const QString &documentId, bool trashed)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("UPDATE documents SET trashed_at = :trashed WHERE id = :id"));
+    query.bindValue(QStringLiteral(":trashed"), trashed ? QVariant(nowIso()) : QVariant());
+    query.bindValue(QStringLiteral(":id"), documentId);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool WorkspaceStore::deleteDocument(const QString &documentId)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("DELETE FROM documents WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), documentId);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool WorkspaceStore::documentExists(const QString &documentId)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("SELECT 1 FROM documents WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), documentId);
+    if (!query.exec())
+        return false;
+    return query.next();
+}
+
+QVector<Revision> WorkspaceStore::revisions(const QString &documentId, const QString &blockId,
+                                            int limit)
+{
+    QVector<Revision> result;
+
+    QSqlQuery query(m_database);
+    QString sql = QStringLiteral(
+        "SELECT id, block_id, event, source, content, block_type, metadata, created_at"
+        " FROM revisions WHERE document_id = :document_id");
+    if (!blockId.isEmpty())
+        sql += QStringLiteral(" AND block_id = :block_id");
+    sql += QStringLiteral(" ORDER BY created_at DESC, id DESC LIMIT :limit");
+
+    query.prepare(sql);
+    query.bindValue(QStringLiteral(":document_id"), documentId);
+    if (!blockId.isEmpty())
+        query.bindValue(QStringLiteral(":block_id"), blockId);
+    query.bindValue(QStringLiteral(":limit"), limit);
+
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return result;
+    }
+
+    while (query.next()) {
+        Revision revision;
+        revision.id = query.value(0).toLongLong();
+        revision.blockId = query.value(1).toString();
+        revision.event = query.value(2).toString();
+        revision.source = query.value(3).toString();
+        revision.content = query.value(4).toString();
+        revision.type = blocktype::fromKey(query.value(5).toString());
+        revision.metadata = fromJson(query.value(6).toString());
+        revision.createdAt = QDateTime::fromString(query.value(7).toString(), Qt::ISODateWithMs);
+        result.append(revision);
+    }
+    return result;
+}
+
+bool WorkspaceStore::pruneRevisions(const QString &documentId, const QString &blockId, int keep)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "DELETE FROM revisions WHERE document_id = :document_id AND block_id = :block_id"
+        " AND id NOT IN (SELECT id FROM revisions WHERE document_id = :document_id"
+        " AND block_id = :block_id ORDER BY id DESC LIMIT :keep)"));
+    query.bindValue(QStringLiteral(":document_id"), documentId);
+    query.bindValue(QStringLiteral(":block_id"), blockId);
+    query.bindValue(QStringLiteral(":keep"), keep);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+qint64 WorkspaceStore::ensureMedia(const QString &sha256, const QString &filename,
+                                   const QString &mimeType, qint64 byteSize)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("SELECT id FROM media WHERE sha256 = :sha256"));
+    query.bindValue(QStringLiteral(":sha256"), sha256);
+    if (query.exec() && query.next())
+        return query.value(0).toLongLong();
+
+    query.prepare(QStringLiteral(
+        "INSERT INTO media (sha256, filename, mime_type, byte_size, created_at)"
+        " VALUES (:sha256, :filename, :mime_type, :byte_size, :created_at)"));
+    query.bindValue(QStringLiteral(":sha256"), sha256);
+    query.bindValue(QStringLiteral(":filename"), filename);
+    query.bindValue(QStringLiteral(":mime_type"), mimeType);
+    query.bindValue(QStringLiteral(":byte_size"), byteSize);
+    query.bindValue(QStringLiteral(":created_at"), nowIso());
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return 0;
+    }
+    return query.lastInsertId().toLongLong();
+}
+
+WorkspaceStore::MediaRecord WorkspaceStore::mediaRecord(qint64 mediaId) const
+{
+    MediaRecord record;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT id, sha256, filename, mime_type, byte_size FROM media WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), mediaId);
+    if (query.exec() && query.next()) {
+        record.id = query.value(0).toLongLong();
+        record.sha256 = query.value(1).toString();
+        record.filename = query.value(2).toString();
+        record.mimeType = query.value(3).toString();
+        record.byteSize = query.value(4).toLongLong();
+    }
+    return record;
+}
+
+QSet<QString> WorkspaceStore::referencedMediaShas() const
+{
+    QSet<QString> shas;
+    QSqlQuery query(m_database);
+    query.exec(QStringLiteral(
+        "SELECT DISTINCT m.sha256 FROM media m WHERE EXISTS ("
+        " SELECT 1 FROM blocks b WHERE b.media_id = m.id) OR EXISTS ("
+        " SELECT 1 FROM media_versions v WHERE v.media_id = m.id)"));
+    while (query.next())
+        shas.insert(query.value(0).toString());
+    return shas;
+}
+
+bool WorkspaceStore::addMediaVersion(const QString &blockId, qint64 mediaId)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO media_versions (block_id, media_id, created_at)"
+        " VALUES (:block_id, :media_id, :created_at)"));
+    query.bindValue(QStringLiteral(":block_id"), blockId);
+    query.bindValue(QStringLiteral(":media_id"), mediaId);
+    query.bindValue(QStringLiteral(":created_at"), nowIso());
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+QVector<qint64> WorkspaceStore::mediaVersions(const QString &blockId) const
+{
+    QVector<qint64> result;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT media_id FROM media_versions WHERE block_id = :block_id"
+        " ORDER BY created_at DESC, id DESC"));
+    query.bindValue(QStringLiteral(":block_id"), blockId);
+    if (!query.exec())
+        return result;
+    while (query.next())
+        result.append(query.value(0).toLongLong());
+    return result;
+}
+
+QString WorkspaceStore::setting(const QString &key, const QString &fallback) const
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("SELECT value FROM settings WHERE key = :key"));
+    query.bindValue(QStringLiteral(":key"), key);
+    if (query.exec() && query.next())
+        return query.value(0).toString();
+    return fallback;
+}
+
+bool WorkspaceStore::setSetting(const QString &key, const QString &value)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO settings (key, value) VALUES (:key, :value)"
+        " ON CONFLICT(key) DO UPDATE SET value = :value"));
+    query.bindValue(QStringLiteral(":key"), key);
+    query.bindValue(QStringLiteral(":value"), value);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+} // namespace writero

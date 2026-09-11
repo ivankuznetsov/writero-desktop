@@ -4,6 +4,9 @@
 #include "editor/formatactions.h"
 
 #include <QDateTime>
+#include <QFileInfo>
+#include <QSet>
+#include <QUrl>
 
 namespace writero {
 
@@ -11,7 +14,21 @@ DocumentController::DocumentController(QObject *parent)
     : QObject(parent)
 {
     m_blocks.setSession(&m_session);
+    m_blocks.setMediaResolver(
+        [this](qint64 mediaId) { return m_workspace ? m_workspace->mediaUrl(mediaId) : QString(); });
     connectSession();
+
+    m_autosave.setSingleShot(true);
+    m_autosave.setInterval(1200);
+    connect(&m_autosave, &QTimer::timeout, this, [this] { saveIfDirty(); });
+}
+
+void DocumentController::setWorkspace(Workspace *workspace)
+{
+    if (m_workspace == workspace)
+        return;
+    m_workspace = workspace;
+    emit workspaceChanged();
 }
 
 void DocumentController::load(const Document &document)
@@ -22,13 +39,144 @@ void DocumentController::load(const Document &document)
 
 void DocumentController::createBlankDocument(const QString &title)
 {
+    m_autosave.stop();
     Document document;
     document.id = newId();
     document.title = title.isEmpty() ? QStringLiteral("Untitled") : title;
     document.blocks = {Block::create(BlockType::Text)};
     document.createdAt = QDateTime::currentDateTimeUtc();
     document.updatedAt = document.createdAt;
+    m_saveError.clear();
+    emit saveErrorChanged();
     load(document);
+}
+
+bool DocumentController::openDocument(const QString &documentId)
+{
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return false;
+
+    if (m_session.id() == documentId && !m_session.isDirty())
+        return true;
+
+    if (m_session.isDirty() && !saveIfDirty())
+        return false;
+
+    QString error;
+    const Document document = m_workspace->store()->loadDocument(documentId, &error);
+    if (document.id.isEmpty()) {
+        setSaveError(error);
+        return false;
+    }
+
+    m_autosave.stop();
+    m_saveError.clear();
+    emit saveErrorChanged();
+    load(document);
+    return true;
+}
+
+QString DocumentController::createDocument(const QString &title)
+{
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return {};
+
+    if (m_session.isDirty())
+        saveIfDirty();
+
+    const QString id = m_workspace->createDocument(title);
+    if (id.isEmpty()) {
+        setSaveError(m_workspace->lastError());
+        return {};
+    }
+    openDocument(id);
+    return id;
+}
+
+bool DocumentController::saveNow()
+{
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return false;
+    if (m_session.id().isEmpty())
+        return false;
+    if (!m_session.isDirty())
+        return true;
+
+    const QVector<DocumentChange> changes = m_session.journal();
+    QString error;
+    if (!m_workspace->store()->saveDocument(m_session.document(), changes, &error)) {
+        setSaveError(error);
+        return false;
+    }
+
+    QSet<QString> touchedBlocks;
+    for (const DocumentChange &change : changes) {
+        if (!change.blockId.isEmpty())
+            touchedBlocks.insert(change.blockId);
+    }
+    for (const QString &blockId : touchedBlocks)
+        m_workspace->store()->pruneRevisions(m_session.id(), blockId, 50);
+
+    m_session.clearJournal();
+    m_session.markSaved();
+    m_saveError.clear();
+    emit saveErrorChanged();
+    emit saved();
+    return true;
+}
+
+bool DocumentController::saveIfDirty()
+{
+    if (!m_session.isDirty())
+        return true;
+    return saveNow();
+}
+
+bool DocumentController::trashCurrentDocument()
+{
+    if (m_workspace == nullptr || m_session.id().isEmpty())
+        return false;
+    if (!m_workspace->trashDocument(m_session.id()))
+        return false;
+    createBlankDocument();
+    return true;
+}
+
+bool DocumentController::attachMedia(int index, const QString &source)
+{
+    if (m_workspace == nullptr || !m_workspace->isReady())
+        return false;
+    if (index < 0 || index >= m_session.document().blocks.size())
+        return false;
+
+    const QUrl url(source);
+    const QString path = url.isLocalFile() ? url.toLocalFile() : source;
+    if (!QFileInfo::exists(path)) {
+        setSaveError(QStringLiteral("Media file not found: %1").arg(path));
+        return false;
+    }
+
+    const qint64 mediaId = m_workspace->importMedia(path);
+    if (mediaId <= 0) {
+        setSaveError(m_workspace->lastError());
+        return false;
+    }
+
+    Block updated = m_session.document().blocks.at(index);
+    const qint64 previousMedia = updated.mediaId;
+    if (previousMedia > 0 && previousMedia != mediaId)
+        m_workspace->store()->addMediaVersion(updated.id, previousMedia);
+    updated.mediaId = mediaId;
+    updated.type = BlockType::Media;
+    updated.setMediaSource(QString());
+    if (updated.mediaAlt().isEmpty())
+        updated.setMediaAlt(QFileInfo(path).completeBaseName());
+    return m_session.updateBlock(index, updated);
+}
+
+QString DocumentController::mediaUrl(qint64 mediaId) const
+{
+    return m_workspace ? m_workspace->mediaUrl(mediaId) : QString();
 }
 
 void DocumentController::setTitle(const QString &title)
@@ -223,6 +371,26 @@ void DocumentController::connectSession()
     connect(&m_session, &DocumentSession::blockInserted, this, &DocumentController::countsChanged);
     connect(&m_session, &DocumentSession::blockRemoved, this, &DocumentController::countsChanged);
     connect(&m_session, &DocumentSession::reset, this, &DocumentController::countsChanged);
+    connect(&m_session, &DocumentSession::dirtyChanged, this, [this](bool dirty) {
+        if (dirty)
+            scheduleAutosave();
+        else
+            m_autosave.stop();
+    });
+}
+
+void DocumentController::scheduleAutosave()
+{
+    if (m_workspace != nullptr && m_workspace->isReady())
+        m_autosave.start();
+}
+
+void DocumentController::setSaveError(const QString &error)
+{
+    if (m_saveError == error)
+        return;
+    m_saveError = error;
+    emit saveErrorChanged();
 }
 
 } // namespace writero

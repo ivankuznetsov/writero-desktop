@@ -4,6 +4,8 @@
 #include <QHash>
 #include <QQmlEngine>
 
+#include <functional>
+
 #include "document/documentsession.h"
 
 namespace writero {
@@ -26,6 +28,7 @@ public:
         MediaSourceRole,
         MediaAltRole,
         MediaIdRole,
+        MediaUrlRole,
         RevisionRole,
         EmptyRole,
         TextualRole,
@@ -35,6 +38,7 @@ public:
     explicit BlockListModel(QObject *parent = nullptr);
 
     void setSession(DocumentSession *session);
+    void setMediaResolver(std::function<QString(qint64)> resolver);
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role) const override;
@@ -46,6 +50,7 @@ private:
     void attachSession();
 
     DocumentSession *m_session = nullptr;
+    std::function<QString(qint64)> m_mediaResolver;
 };
 
 } // namespace writero
