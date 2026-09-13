@@ -25,6 +25,13 @@ set_tests_properties(tst_aicontroller PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_RUNTIME_DIR=${CMAKE_BINARY_DIR}/runtime"
 )
 
+add_executable(tst_hosted_jobs ai/tst_hosted_jobs.cpp)
+target_link_libraries(tst_hosted_jobs PRIVATE writero_ui writero_uiplugin Qt6::Test)
+add_test(NAME tst_hosted_jobs COMMAND tst_hosted_jobs)
+set_tests_properties(tst_hosted_jobs PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_RUNTIME_DIR=${CMAKE_BINARY_DIR}/runtime"
+)
+
 add_executable(tst_sync cloud/tst_sync.cpp)
 target_link_libraries(tst_sync PRIVATE writero_ui writero_uiplugin Qt6::Test)
 add_test(NAME tst_sync COMMAND tst_sync)

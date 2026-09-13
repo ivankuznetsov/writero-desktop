@@ -30,10 +30,36 @@ Drawer {
     readonly property string operation: operationIndex === 0 ? "text"
                                         : operationIndex === 1 ? "generate" : "explain"
 
+    function buildProviders() {
+        const entries = []
+        if (aiPanel.ai && aiPanel.ai.account && aiPanel.ai.account.hostedAiEnabled)
+            entries.push({ id: "writero", name: qsTr("Writero hosted AI (credits)") })
+        if (aiPanel.providers) {
+            const profiles = aiPanel.providers.profiles
+            for (let i = 0; i < profiles.length; ++i)
+                entries.push(profiles[i])
+        }
+        return entries
+    }
+
     function updateModels() {
         capabilityMessage = ""
         if (!providers || providerId === "") {
             availableModels = []
+            return
+        }
+        if (aiPanel.providerId === "writero") {
+            const hosted = aiPanel.ai.account.hostedModels
+            availableModels = []
+            for (let i = 0; i < hosted.length; ++i)
+                availableModels.push({ id: hosted[i], name: hosted[i] })
+            modelBox.currentIndex = availableModels.length > 0 ? 0 : -1
+            if (operation !== "text")
+                capabilityMessage = qsTr("Hosted image tools are not available yet. "
+                                         + "Choose a personal provider or a local model.")
+            else if (availableModels.length === 0)
+                capabilityMessage = qsTr("Hosted AI is not enabled for this account.")
+            referenceCheck.checked = false
             return
         }
         availableModels = providers.modelsFor(providerId, operation)
@@ -108,6 +134,11 @@ Drawer {
         }
     }
 
+    Connections {
+        target: aiPanel.ai ? aiPanel.ai.account : null
+        function onChanged() { aiPanel.updateModels() }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: Theme.spacing
@@ -125,7 +156,7 @@ Drawer {
             Layout.fillWidth: true
             textRole: "name"
             valueRole: "id"
-            model: aiPanel.providers ? aiPanel.providers.profiles : []
+            model: aiPanel.buildProviders()
             displayText: currentIndex >= 0 ? currentText : qsTr("No provider configured")
             onCurrentIndexChanged: aiPanel.updateModels()
         }
@@ -159,6 +190,17 @@ Drawer {
                 ToolTip.visible: hovered
                 onClicked: aiPanel.providers.refreshModels(aiPanel.providerId)
             }
+        }
+
+        Label {
+            Layout.fillWidth: true
+            visible: aiPanel.providerId === "writero"
+            text: aiPanel.ai && aiPanel.ai.account
+                  ? qsTr("Uses hosted credits \u00B7 $%1 remaining")
+                        .arg(aiPanel.ai.account.remainingCreditUsd.toFixed(2))
+                  : ""
+            color: Theme.accent
+            font.pixelSize: 12
         }
 
         ComboBox {
@@ -230,7 +272,7 @@ Drawer {
 
         CheckBox {
             id: referenceCheck
-            visible: aiPanel.operationIndex === 1
+            visible: aiPanel.operationIndex === 1 && aiPanel.providerId !== "writero"
             enabled: aiPanel.availableModels.length > 0 && modelBox.currentIndex >= 0
                      && aiPanel.providers.modelSupportsReference(aiPanel.providerId,
                                                                  aiPanel.selectedModel())
@@ -353,8 +395,8 @@ Drawer {
 
     onOpened: {
         updateModels()
-        if (providers && providerId !== "" && !providers.hasModels(providerId)
-            && !providers.modelsLoading(providerId))
+        if (providers && providerId !== "" && providerId !== "writero"
+            && !providers.hasModels(providerId) && !providers.modelsLoading(providerId))
             providers.refreshModels(providerId)
     }
 }

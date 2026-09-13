@@ -44,6 +44,12 @@ ApplicationWindow {
         workspace: workspace
         providers: providers
         document: document
+        account: account
+    }
+
+    WriteroUsage {
+        id: writeroUsage
+        account: account
     }
 
     SyncEngine {
@@ -66,6 +72,7 @@ ApplicationWindow {
     Account {
         id: accountDialog
         session: account
+        usageDialog: writeroUsage
     }
 
     Providers {

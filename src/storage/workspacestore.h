@@ -106,6 +106,7 @@ public:
         QString error;
         int baseRevision = 0;
         QString batchId;
+        QString operationId;
         QDateTime createdAt;
     };
 

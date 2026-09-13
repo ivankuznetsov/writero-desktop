@@ -98,7 +98,7 @@ bool WorkspaceStore::migrate()
     query.next();
     int version = query.value(0).toInt();
 
-    if (version >= 3)
+    if (version >= 4)
         return true;
 
     if (!m_database.transaction()) {
@@ -256,6 +256,25 @@ bool WorkspaceStore::migrate()
             }
         }
         if (!query.exec(QStringLiteral("PRAGMA user_version = 3"))) {
+            m_lastError = query.lastError().text();
+            m_database.rollback();
+            return false;
+        }
+        version = 3;
+    }
+
+    if (version < 4) {
+        const QStringList statements = {
+            QStringLiteral("ALTER TABLE ai_results ADD COLUMN operation_id TEXT NOT NULL DEFAULT ''"),
+        };
+        for (const QString &statement : statements) {
+            if (!query.exec(statement)) {
+                m_lastError = query.lastError().text();
+                m_database.rollback();
+                return false;
+            }
+        }
+        if (!query.exec(QStringLiteral("PRAGMA user_version = 4"))) {
             m_lastError = query.lastError().text();
             m_database.rollback();
             return false;
@@ -795,9 +814,9 @@ bool WorkspaceStore::saveAiResult(const AiResultRecord &result)
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "INSERT INTO ai_results (id, document_id, block_id, kind, provider_id, model, prompt,"
-        " status, content, error, base_revision, batch_id, created_at)"
+        " status, content, error, base_revision, batch_id, operation_id, created_at)"
         " VALUES (:id, :document_id, :block_id, :kind, :provider_id, :model, :prompt, :status,"
-        " :content, :error, :base_revision, :batch_id, :created_at)"
+        " :content, :error, :base_revision, :batch_id, :operation_id, :created_at)"
         " ON CONFLICT(id) DO UPDATE SET status = :status, content = :content, error = :error"));
     query.bindValue(QStringLiteral(":id"), result.id);
     query.bindValue(QStringLiteral(":document_id"), result.documentId);
@@ -811,6 +830,7 @@ bool WorkspaceStore::saveAiResult(const AiResultRecord &result)
     query.bindValue(QStringLiteral(":error"), nonNull(result.error));
     query.bindValue(QStringLiteral(":base_revision"), result.baseRevision);
     query.bindValue(QStringLiteral(":batch_id"), nonNull(result.batchId));
+    query.bindValue(QStringLiteral(":operation_id"), nonNull(result.operationId));
     query.bindValue(QStringLiteral(":created_at"),
                     result.createdAt.isValid() ? result.createdAt.toString(Qt::ISODateWithMs)
                                                : nowIso());
@@ -829,7 +849,7 @@ QVector<WorkspaceStore::AiResultRecord> WorkspaceStore::aiResults(const QString 
     QSqlQuery query(m_database);
     QString sql = QStringLiteral(
         "SELECT id, document_id, block_id, kind, provider_id, model, prompt, status, content,"
-        " error, base_revision, batch_id, created_at FROM ai_results"
+        " error, base_revision, batch_id, operation_id, created_at FROM ai_results"
         " WHERE document_id = :document_id");
     if (!blockId.isEmpty())
         sql += QStringLiteral(" AND block_id = :block_id");
@@ -859,7 +879,8 @@ QVector<WorkspaceStore::AiResultRecord> WorkspaceStore::aiResults(const QString 
         record.error = query.value(9).toString();
         record.baseRevision = query.value(10).toInt();
         record.batchId = query.value(11).toString();
-        record.createdAt = QDateTime::fromString(query.value(12).toString(), Qt::ISODateWithMs);
+        record.operationId = query.value(12).toString();
+        record.createdAt = QDateTime::fromString(query.value(13).toString(), Qt::ISODateWithMs);
         result.append(record);
     }
     return result;

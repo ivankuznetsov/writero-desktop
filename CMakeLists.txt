@@ -85,6 +85,8 @@ add_library(writero_ui STATIC
     src/ai/aicontroller.cpp
     src/ai/providerregistry.h
     src/ai/providerregistry.cpp
+    src/ai/providers/WriteroProvider.h
+    src/ai/providers/WriteroProvider.cpp
     src/cloud/accountsession.h
     src/cloud/accountsession.cpp
     src/cloud/changereconciler.h
@@ -136,6 +138,7 @@ qt_add_qml_module(writero_ui
         qml/library/DocumentSidebar.qml
         qml/settings/Account.qml
         qml/settings/Providers.qml
+        qml/settings/WriteroUsage.qml
         qml/sync/ConflictPanel.qml
 )
 

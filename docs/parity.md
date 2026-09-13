@@ -86,5 +86,6 @@ claiming support.
 | U8 | server: `test/integration/desktop_oauth_test.rb`, `capabilities_controller_test.rb`; desktop: `tests/cloud/tst_accountsession.cpp` |
 | U9 | server: `desktop_sync_contract_test.rb`, `desktop_change_capture_test.rb` |
 | U10 | desktop: `tests/cloud/tst_sync.cpp`, `tests/cloud/tst_reconciliation.cpp` |
-| U11–U12 | not implemented; hosted credits and full cloud parity |
+| U11 | server: `hosted_ai_billing_test.rb`, `desktop_hosted_ai_test.rb`; desktop: `tests/ai/tst_hosted_jobs.cpp` (text hosted route; hosted image tools remain) |
+| U12 | not implemented; shares, schedules, and remaining parity rows |
 | U13 | `docs/verification.md`, `packaging/`, install rules in `CMakeLists.txt` |

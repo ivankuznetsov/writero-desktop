@@ -31,11 +31,14 @@ Implemented so far:
 - [x] U10 — Native cloud sync and conflict resolution (connect, push with
   idempotent replay, pull, conflict review; editorial-result application and
   the native remote-history browser remain)
-- [ ] U11–U12 — Hosted AI credits and full cloud parity (service-side work)
+- [x] U11 — Hosted AI credits for text operations (server jobs, reservations,
+  idempotent settlement; desktop `WriteroProvider` and usage display). Hosted
+  image/vision tools and share/schedule parity remain.
+- [ ] U12 — Full cloud parity (shares, schedules, remaining parity rows)
 - [x] U13 — Open-source packaging and Omarchy acceptance artifacts
 
-The remaining work is hosted AI credits and full cloud parity (U11–U12),
-plus the U10 follow-ups noted above.
+The remaining work is hosted image/vision tools, full cloud parity (U12), and
+the U10 follow-ups noted above.
 
 ## Building
 

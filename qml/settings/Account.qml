@@ -14,6 +14,7 @@ Dialog {
     anchors.centerIn: Overlay.overlay
 
     property AccountSession session
+    property var usageDialog
 
     background: Rectangle {
         color: Theme.surface
@@ -94,6 +95,12 @@ Dialog {
 
         RowLayout {
             Layout.alignment: Qt.AlignRight
+
+            Button {
+                visible: accountDialog.session && accountDialog.session.connected
+                text: qsTr("Usage and credits\u2026")
+                onClicked: if (accountDialog.usageDialog) accountDialog.usageDialog.open()
+            }
 
             Button {
                 visible: accountDialog.session && accountDialog.session.connected

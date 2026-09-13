@@ -1,9 +1,12 @@
 #pragma once
 
+#include <QHash>
 #include <QObject>
 #include <QQmlEngine>
 
 #include "ai/providerregistry.h"
+#include "ai/providers/WriteroProvider.h"
+#include "cloud/accountsession.h"
 #include "ai/textactions.h"
 #include "editor/documentcontroller.h"
 
@@ -22,6 +25,7 @@ class AiController : public QObject
     Q_PROPERTY(Workspace *workspace READ workspace WRITE setWorkspace NOTIFY changed)
     Q_PROPERTY(ProviderRegistry *providers READ providers WRITE setProviders NOTIFY changed)
     Q_PROPERTY(DocumentController *document READ document WRITE setDocument NOTIFY changed)
+    Q_PROPERTY(AccountSession *account READ account WRITE setAccount NOTIFY changed)
     Q_PROPERTY(QVariantList results READ results NOTIFY resultsChanged)
     Q_PROPERTY(int currentBlock READ currentBlock NOTIFY currentBlockChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -36,6 +40,8 @@ public:
     void setProviders(ProviderRegistry *providers);
     DocumentController *document() const { return m_document; }
     void setDocument(DocumentController *document);
+    AccountSession *account() const { return m_account; }
+    void setAccount(AccountSession *account);
 
     QVariantList results() const { return m_results; }
     int currentBlock() const { return m_currentBlock; }
@@ -75,7 +81,13 @@ signals:
 private:
     WorkspaceStore::AiResultRecord createResult(const QString &blockId, const QString &kind,
                                                 const QString &providerId, const QString &model,
-                                                const QString &prompt, const QString &batchId = {});
+                                                const QString &prompt, const QString &batchId = {},
+                                                const QString &operationId = {});
+    QString runHostedRewrite(int index, const QString &blockId, const QStringList &models,
+                             const QString &prompt);
+    QString hostedUnsupported(int index, const QString &kind, const QString &providerId,
+                              const QString &model, const QString &prompt);
+    static QStringList surroundingText(const Document &document, const Block &block);
     AiClient *makeClient(const QString &providerId, const QString &model);
     void executeChat(const WorkspaceStore::AiResultRecord &record,
                      textactions::Operation operation, const QString &instruction);
@@ -91,6 +103,9 @@ private:
     Workspace *m_workspace = nullptr;
     ProviderRegistry *m_providers = nullptr;
     DocumentController *m_document = nullptr;
+    AccountSession *m_account = nullptr;
+    WriteroProvider *m_hosted = nullptr;
+    QHash<QString, QString> m_hostedResultIds;
     QVariantList m_results;
     QVector<WorkspaceStore::AiResultRecord> m_resultRecords;
     int m_currentBlock = -1;

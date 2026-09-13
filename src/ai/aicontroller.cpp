@@ -1,5 +1,7 @@
 #include "ai/aicontroller.h"
 
+#include "cloud/accountsession.h"
+
 #include <algorithm>
 #include <utility>
 
@@ -69,6 +71,132 @@ void AiController::setDocument(DocumentController *document)
     emit changed();
 }
 
+void AiController::setAccount(AccountSession *account)
+{
+    if (m_account == account)
+        return;
+    m_account = account;
+
+    if (m_hosted) {
+        m_hosted->deleteLater();
+        m_hosted = nullptr;
+    }
+
+    if (m_account) {
+        m_hosted = new WriteroProvider(m_account, this);
+        connect(m_hosted, &WriteroProvider::finished, this,
+                [this](const QString &operationId, const QString &content,
+                       const QJsonObject &usage) {
+                    const QString resultId = m_hostedResultIds.take(operationId);
+                    if (!resultId.isEmpty())
+                        settleResult(resultId, QStringLiteral("completed"), content, {});
+                    const double cost = usage.value(QStringLiteral("cost_usd")).toDouble();
+                    if (cost > 0) {
+                        emit notice(QStringLiteral("Hosted AI settled at $%1.")
+                                        .arg(cost, 0, 'f', 4));
+                    }
+                    operationFinished();
+                    if (m_account)
+                        m_account->refreshCapabilities();
+                });
+        connect(m_hosted, &WriteroProvider::failed, this,
+                [this](const QString &operationId, const QString &error) {
+                    const QString resultId = m_hostedResultIds.take(operationId);
+                    if (!resultId.isEmpty())
+                        settleResult(resultId, QStringLiteral("failed"), {}, error);
+                    operationFinished();
+                });
+        connect(m_hosted, &WriteroProvider::ambiguous, this,
+                [this](const QString &operationId, const QString &error) {
+                    const QString resultId = m_hostedResultIds.take(operationId);
+                    if (!resultId.isEmpty()) {
+                        settleResult(resultId, QStringLiteral("failed"), {},
+                                     QStringLiteral("Provider outcome unknown (%1). "
+                                                    "Credits may be held and the operation is "
+                                                    "not retried automatically.")
+                                         .arg(error));
+                    }
+                    operationFinished();
+                });
+    }
+    emit changed();
+}
+
+QStringList AiController::surroundingText(const Document &document, const Block &block)
+{
+    const int index = document.indexOf(block.id);
+    if (index < 0)
+        return {};
+
+    QStringList lines;
+    for (int i = qMax(0, index - 2); i <= qMin(document.blocks.size() - 1, index + 2); ++i) {
+        if (i == index)
+            continue;
+        const QString content = document.blocks.at(i).content.simplified();
+        if (!content.isEmpty())
+            lines.append(content.left(199) + (content.size() > 200 ? QStringLiteral("\u2026")
+                                                                   : QString()));
+    }
+    return lines;
+}
+
+QString AiController::runHostedRewrite(int index, const QString &blockId,
+                                       const QStringList &models, const QString &prompt)
+{
+    if (!m_account || !m_account->isConnected() || !m_account->hostedAiEnabled()) {
+        emit notice(QStringLiteral("Connect a Writero account with hosted AI enabled, "
+                                   "or use a personal provider or local model."));
+        return {};
+    }
+    if (!m_hosted)
+        return {};
+
+    const Document &document = m_document->session().document();
+    const Block *block = blockById(blockId);
+    if (!block)
+        return {};
+
+    HostedContext context;
+    context.content = block->content;
+    context.blockType = blocktype::toKey(block->type);
+    context.articleTitle = document.title;
+    context.surrounding = surroundingText(document, *block);
+
+    QString firstId;
+    for (const QString &model : models) {
+        const QString operationId = newId();
+        const WorkspaceStore::AiResultRecord record = createResult(
+            blockId, QStringLiteral("rewrite"), QStringLiteral("writero"), model, prompt, {},
+            operationId);
+        WorkspaceStore::AiResultRecord processing = record;
+        processing.status = QStringLiteral("processing");
+        m_workspace->store()->saveAiResult(processing);
+        m_hostedResultIds.insert(operationId, record.id);
+        if (firstId.isEmpty())
+            firstId = record.id;
+
+        operationStarted();
+        m_hosted->submit(operationId, QStringLiteral("rewrite"), model, prompt, context);
+    }
+    refreshResults();
+    return firstId;
+}
+
+QString AiController::hostedUnsupported(int index, const QString &kind, const QString &providerId,
+                                        const QString &model, const QString &prompt)
+{
+    Q_UNUSED(index);
+    const QString blockId = m_currentBlock >= 0 && m_currentBlock < m_document->blocks()->rowCount()
+        ? m_document->blocks()->get(m_currentBlock).value(QStringLiteral("blockId")).toString()
+        : QString();
+    const WorkspaceStore::AiResultRecord record = createResult(
+        blockId, kind, providerId, model, prompt);
+    settleResult(record.id, QStringLiteral("failed"), {},
+                 QStringLiteral("Hosted image tools are not available yet. Choose a personal "
+                                "provider or a local model."));
+    return record.id;
+}
+
 void AiController::setCurrentBlock(int index)
 {
     if (m_currentBlock == index)
@@ -126,7 +254,7 @@ const Block *AiController::blockById(const QString &blockId) const
 
 WorkspaceStore::AiResultRecord AiController::createResult(
     const QString &blockId, const QString &kind, const QString &providerId, const QString &model,
-    const QString &prompt, const QString &batchId)
+    const QString &prompt, const QString &batchId, const QString &operationId)
 {
     WorkspaceStore::AiResultRecord record;
     record.id = newId();
@@ -138,6 +266,7 @@ WorkspaceStore::AiResultRecord AiController::createResult(
     record.prompt = prompt;
     record.status = QStringLiteral("pending");
     record.batchId = batchId;
+    record.operationId = operationId;
     record.createdAt = QDateTime::currentDateTimeUtc();
     if (!blockId.isEmpty()) {
         const Block *block = blockById(blockId);
@@ -223,6 +352,9 @@ QString AiController::runRewrite(int index, const QString &providerId, const QSt
     if (modelList.isEmpty())
         return {};
 
+    if (WriteroProvider::isHostedProviderId(providerId))
+        return runHostedRewrite(index, blockId, modelList, prompt);
+
     QString firstId;
     for (const QString &model : modelList) {
         const WorkspaceStore::AiResultRecord record = createResult(
@@ -243,6 +375,10 @@ QString AiController::runImageGeneration(int index, const QString &providerId, c
     setCurrentBlock(index);
     if (index < 0 || index >= m_document->blocks()->rowCount())
         return {};
+
+    if (WriteroProvider::isHostedProviderId(providerId))
+        return hostedUnsupported(index, QStringLiteral("image_generation"), providerId, model,
+                                 prompt);
 
     const Block *block = blockById(
         m_document->blocks()->get(index).value(QStringLiteral("blockId")).toString());
@@ -299,6 +435,10 @@ QString AiController::runImageExplanation(int index, const QString &providerId,
     setCurrentBlock(index);
     if (index < 0 || index >= m_document->blocks()->rowCount())
         return {};
+
+    if (WriteroProvider::isHostedProviderId(providerId))
+        return hostedUnsupported(index, QStringLiteral("image_explanation"), providerId, model,
+                                 prompt);
 
     const QString blockId =
         m_document->blocks()->get(index).value(QStringLiteral("blockId")).toString();
@@ -403,6 +543,11 @@ void AiController::runBulk(const QString &providerId, const QString &model,
     }
     if (blockIds.isEmpty()) {
         emit notice(QStringLiteral("There is nothing to rewrite."));
+        return;
+    }
+    if (WriteroProvider::isHostedProviderId(providerId)) {
+        emit notice(QStringLiteral("Hosted bulk actions are not available yet. Use a personal "
+                                   "provider for bulk rewrite or Polish."));
         return;
     }
 
