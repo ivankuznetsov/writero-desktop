@@ -35,11 +35,11 @@ Implemented so far:
   explanation with reservations, idempotent settlement, and desktop
   `WriteroProvider` (reference and vision images upload with account
   ownership checks).
-- [ ] U12 — Full cloud parity (shares, schedules, remaining parity rows)
+- [x] U12 — Full cloud parity: share links for connected documents (local
+  documents use Markdown export), service-side research and scheduled
+  research arriving as ordinary synced articles, and the remaining parity
+  rows.
 - [x] U13 — Open-source packaging and Omarchy acceptance artifacts
-
-The remaining work is full cloud parity (U12) and the U10 follow-ups noted
-above.
 
 ## Building
 

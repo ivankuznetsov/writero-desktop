@@ -59,6 +59,12 @@ ApplicationWindow {
         document: document
     }
 
+    ShareLinkDialog {
+        id: shareDialog
+        engine: sync
+        document: document
+    }
+
     ConflictPanel {
         id: conflictPanel
         engine: sync
@@ -273,6 +279,11 @@ ApplicationWindow {
                 Menu {
                     id: documentMenu
 
+                    MenuItem {
+                        text: qsTr("Share link\u2026")
+                        onTriggered: shareDialog.open()
+                    }
+                    MenuSeparator {}
                     MenuItem {
                         text: qsTr("Export Markdown\u2026")
                         onTriggered: exportMarkdownDialog.open()

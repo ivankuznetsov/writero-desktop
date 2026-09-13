@@ -54,7 +54,7 @@ paragraphs. Native import/export implements the same mapping in U4.
 | Area | Web behavior | Native |
 |---|---|---|
 | Rewrite | Prompt plus multi-model alternatives; individual results wait for Replace/Insert below/Dismiss while explicit bulk actions apply automatically (`app/services/ai_service.rb`, `multi_model_rewrite_service.rb`) | native: `AiController` and `AiPanel.qml`, results persisted before dispatch |
-| Research | Block research with preserved sources; scheduled research creates articles (`scheduled_research_service.rb`) | cloud: runs as a service function and arrives as a synced article (U8–U12); no local research operation |
+| Research | Block research with preserved sources; scheduled research creates articles (`scheduled_research_service.rb`) | cloud: scheduled research is a service-side concern — its output is just another synced article, so the desktop client needs no research UI; on-demand block research stays browser-side |
 | Image generation | OpenRouter chat with image modalities; replace snapshots old media, add-below creates a media block (`image_generation_service.rb`) | native: per-model capability discovery, reference images only where the model and provider support them, results stored as workspace media |
 | Image explanation | Vision model describes the block's image; read-only result (`image_explainer_service.rb`) | native: Explain tab, model filtered to image-input capability |
 
@@ -87,5 +87,5 @@ claiming support.
 | U9 | server: `desktop_sync_contract_test.rb`, `desktop_change_capture_test.rb` |
 | U10 | desktop: `tests/cloud/tst_sync.cpp` (connect, replay, conflicts, media, remote results/history, account guards), `tests/cloud/tst_reconciliation.cpp` |
 | U11 | server: `hosted_ai_billing_test.rb`, `desktop_hosted_ai_test.rb` (text + image generation/explanation, reservations, settlement, upload ownership); desktop: `tests/ai/tst_hosted_jobs.cpp` |
-| U12 | not implemented; shares, schedules, and remaining parity rows |
+| U12 | server: `desktop_cloud_features_test.rb` (share links are account-scoped; research articles sync as ordinary documents); desktop: `tst_sync` share-link scenarios |
 | U13 | `docs/verification.md`, `packaging/`, install rules in `CMakeLists.txt` |

@@ -111,6 +111,17 @@ void CloudClient::fetchHistory(const QString &documentId, const QString &remoteB
                [this](const QJsonObject &json) { emit historyReceived(json); });
 }
 
+void CloudClient::fetchShareLink(const QString &documentId)
+{
+    const QNetworkRequest request =
+        requestFor(QStringLiteral("/api/desktop/v1/documents/%1/share_link").arg(documentId));
+    finishJson(m_network->get(request), QStringLiteral("share_link"),
+               [this](const QJsonObject &json) {
+                   emit shareLinkReceived(
+                       json.value(QStringLiteral("share_url")).toString());
+               });
+}
+
 void CloudClient::postMutations(const QString &documentId, const QJsonArray &mutations)
 {
     const QJsonObject body{{QStringLiteral("mutations"), mutations}};

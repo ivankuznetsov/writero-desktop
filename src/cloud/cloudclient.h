@@ -36,6 +36,7 @@ public:
     void fetchSnapshotPage(const QString &documentId, const QString &leaseId, int page);
     void fetchChanges(const QString &documentId, qint64 cursor, qint64 generation, int limit = 200);
     void fetchHistory(const QString &documentId, const QString &remoteBlockId);
+    void fetchShareLink(const QString &documentId);
     void postMutations(const QString &documentId, const QJsonArray &mutations);
     void uploadMedia(const QString &path);
     void downloadMedia(const QString &documentId, const QString &remoteBlockId);
@@ -45,6 +46,7 @@ signals:
     void snapshotReceived(const QJsonObject &body);
     void changesReceived(const QJsonObject &body);
     void historyReceived(const QJsonObject &body);
+    void shareLinkReceived(const QString &shareUrl);
     void mutationsApplied(const QJsonObject &body);
     void mediaUploaded(const QJsonObject &body);
     void mediaDownloaded(const QString &remoteBlockId, const QByteArray &data,

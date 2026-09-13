@@ -80,6 +80,7 @@ public:
     Q_INVOKABLE bool importMarkdownFile(const QString &path);
     Q_INVOKABLE bool pasteMarkdown(int index, const QString &markdown);
     Q_INVOKABLE QString clipboardText() const;
+    Q_INVOKABLE void copyToClipboard(const QString &text);
     Q_INVOKABLE bool looksLikeMarkdown(const QString &text) const;
 
     /// Block history: content revisions and media versions, newest first.

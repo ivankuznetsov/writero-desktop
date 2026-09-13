@@ -294,6 +294,17 @@ private:
                            });
         }
 
+        if (remainder.endsWith(QLatin1String("/share_link")) && method == "GET") {
+            return respond(200, "OK",
+                           QJsonObject{
+                               {QStringLiteral("share_url"),
+                                QStringLiteral("https://writero.test/s/%1").arg(documentId)},
+                               {QStringLiteral("share_path"),
+                                QStringLiteral("/s/%1").arg(documentId)},
+                               {QStringLiteral("public_token"), documentId},
+                           });
+        }
+
         if (remainder.endsWith(QLatin1String("/changes")) && method == "GET") {
             if (m_cursorExpired) {
                 return respond(410, "Gone",
@@ -764,6 +775,33 @@ private slots:
         fixture.engine.loadRemoteHistory(0);
         QVERIFY(fixture.engine.remoteContentVersions().isEmpty());
         QVERIFY(fixture.engine.remoteMediaVersions().isEmpty());
+    }
+
+    void shareLinksResolveOnlyForConnectedDocuments()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+
+        QSignalSpy ready(&fixture.engine, &SyncEngine::shareLinkReady);
+        QSignalSpy failed(&fixture.engine, &SyncEngine::shareLinkFailed);
+
+        // Local documents share nothing: sync stays untouched and the UI is
+        // told to use Markdown export instead.
+        fixture.engine.requestShareLink();
+        QCOMPARE(failed.count(), 1);
+        QVERIFY(failed.last().first().toString().contains(QStringLiteral("Markdown")));
+        QVERIFY(ready.isEmpty());
+        QCOMPARE(fixture.engine.state(), QStringLiteral("local"));
+
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
+        fixture.engine.connectDocument();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+
+        fixture.engine.requestShareLink();
+        QTRY_COMPARE_WITH_TIMEOUT(ready.count(), 1, 5000);
+        QCOMPARE(ready.last().first().toString(),
+                 QStringLiteral("https://writero.test/s/cloud-1"));
+        QCOMPARE(fixture.engine.state(), QStringLiteral("synced"));
     }
 
     void deletedCloudDocumentsKeepLocalWork()

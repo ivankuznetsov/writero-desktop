@@ -375,6 +375,11 @@ QString DocumentController::clipboardText() const
     return QGuiApplication::clipboard()->text();
 }
 
+void DocumentController::copyToClipboard(const QString &text)
+{
+    QGuiApplication::clipboard()->setText(text);
+}
+
 bool DocumentController::looksLikeMarkdown(const QString &text) const
 {
     return markdown::looksLikeMarkdown(text);

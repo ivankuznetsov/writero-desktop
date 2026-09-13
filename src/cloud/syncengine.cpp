@@ -32,6 +32,8 @@ SyncEngine::SyncEngine(QObject *parent)
     connect(&m_client, &CloudClient::changesReceived, this, &SyncEngine::onChangesReceived);
     connect(&m_client, &CloudClient::snapshotReceived, this, &SyncEngine::onSnapshotReceived);
     connect(&m_client, &CloudClient::requestFailed, this, &SyncEngine::onRequestFailed);
+    connect(&m_client, &CloudClient::shareLinkReceived, this,
+            [this](const QString &shareUrl) { emit shareLinkReady(shareUrl); });
     connect(&m_client, &CloudClient::mediaUploaded, this, [this](const QJsonObject &body) {
         if (m_inFlightOperations.isEmpty() || !m_document)
             return;
@@ -800,6 +802,21 @@ void SyncEngine::loadRemoteHistory(int blockIndex)
     m_client.fetchHistory(m_cloudId, remoteId);
 }
 
+void SyncEngine::requestShareLink()
+{
+    if (!m_document || m_cloudId.isEmpty()) {
+        emit shareLinkFailed(QStringLiteral("Connect this document to get a share link. "
+                                            "Local documents can be exported to Markdown."));
+        return;
+    }
+    if (!m_account || !m_account->isConnected()) {
+        emit shareLinkFailed(
+            QStringLiteral("Sign in to your Writero account to share this document."));
+        return;
+    }
+    m_client.fetchShareLink(m_cloudId);
+}
+
 void SyncEngine::restoreRemoteVersion(int blockIndex, qint64 versionId)
 {
     if (!m_document || blockIndex < 0 || blockIndex >= m_document->blocks()->rowCount())
@@ -989,6 +1006,15 @@ void SyncEngine::handleConflict(int status, const QJsonObject &body)
 void SyncEngine::onRequestFailed(const QString &operation, int status, const QJsonObject &body,
                                  const QString &message)
 {
+    if (operation == QLatin1String("share_link")) {
+        // A share request never changes the sync state: report it to the UI
+        // and leave the queue and connection untouched.
+        emit shareLinkFailed(message.isEmpty()
+                                 ? QStringLiteral("Could not create the share link.")
+                                 : message);
+        return;
+    }
+
     if (operation == QLatin1String("download_media") || operation == QLatin1String("upload_media")) {
         // Media failures leave the pending operation queued for a later sync.
         setError(message.isEmpty() ? QStringLiteral("Media transfer failed.") : message);

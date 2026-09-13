@@ -65,6 +65,7 @@ public:
     Q_INVOKABLE void disconnectDocument();
     Q_INVOKABLE void resolveConflict(const QString &conflictId, bool keepLocal);
     Q_INVOKABLE QVariantList conflictList() const;
+    Q_INVOKABLE void requestShareLink();
     Q_INVOKABLE void loadRemoteHistory(int blockIndex);
     Q_INVOKABLE void restoreRemoteVersion(int blockIndex, qint64 versionId);
     Q_INVOKABLE void restoreRemoteMediaVersion(int blockIndex, qint64 attachmentId);
@@ -75,6 +76,8 @@ signals:
     void conflictsChanged();
     void cloudResultsChanged();
     void remoteHistoryChanged();
+    void shareLinkReady(const QString &shareUrl);
+    void shareLinkFailed(const QString &message);
     void notice(const QString &message);
 
 private:
