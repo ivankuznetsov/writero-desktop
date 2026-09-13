@@ -30,6 +30,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
       - name: QML lint
+        shell: bash
         run: |
           shopt -s globstar
-          qmllint -I build qml/**/*.qml
+          PATH="/usr/lib/qt6/bin:$PATH" qmllint -I build qml/**/*.qml
