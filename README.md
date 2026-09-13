@@ -41,6 +41,17 @@ Implemented so far:
   rows.
 - [x] U13 — Open-source packaging and Omarchy acceptance artifacts
 
+## Installing
+
+Arch Linux (AUR):
+
+```sh
+yay -S writero-desktop
+```
+
+Every tag publishes `writero-desktop` to the AUR automatically from the
+checksummed source tarball attached to the GitHub release.
+
 ## Building
 
 Requirements: CMake ≥ 3.21, a C++20 compiler, Qt 6.5+ (Core, Gui, Network,

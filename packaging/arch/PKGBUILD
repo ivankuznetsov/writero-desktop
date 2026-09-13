@@ -1,4 +1,8 @@
 # Maintainer: Ivan Kuznetsov <ivan@ikuznetsov.com>
+#
+# pkgver and sha256sums track the latest release. The tag-driven release
+# workflow overrides both from the tag and its attached source tarball
+# before publishing, so a stale value here never reaches the AUR.
 pkgname=writero-desktop
 pkgver=0.1.0
 pkgrel=1

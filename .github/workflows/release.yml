@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish release
+    runs-on: ubuntu-24.04
+    outputs:
+      aur_enabled: ${{ steps.aur_gate.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the tag matches the project version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="${REF_NAME#v}"
+          if ! grep -Eq "^[[:space:]]*VERSION[[:space:]]+${version}[[:space:]]*$" CMakeLists.txt; then
+            echo "CMakeLists.txt does not declare VERSION ${version}" >&2
+            exit 1
+          fi
+
+      - name: Build the source tarball
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="${REF_NAME#v}"
+          git archive --format=tar.gz --prefix="writero-desktop-${version}/" \
+            -o "writero-desktop-${version}.tar.gz" "$REF_NAME"
+          sha256sum "writero-desktop-${version}.tar.gz" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="${REF_NAME#v}"
+          # Idempotent: a rerun of an already-published tag re-uploads the
+          # assets instead of failing on the existing release.
+          if gh release view "$REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$REF_NAME" --clobber \
+              "writero-desktop-${version}.tar.gz" SHA256SUMS
+          else
+            gh release create "$REF_NAME" \
+              "writero-desktop-${version}.tar.gz" SHA256SUMS \
+              --title "Writero Desktop ${version}" \
+              --notes "Source tarball for the writero-desktop AUR package. Install with: yay -S writero-desktop" \
+              --verify-tag
+          fi
+
+      - name: Determine AUR publish eligibility
+        id: aur_gate
+        # A job-level `if:` cannot read secrets, so the AUR job gates on this
+        # output. Only tests the secret for emptiness; never echoes it.
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$AUR_SSH_PRIVATE_KEY" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "aur-publish: enabled (AUR_SSH_PRIVATE_KEY is set)"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "aur-publish: skipped; AUR_SSH_PRIVATE_KEY is not set"
+          fi
+
+  aur-publish:
+    name: Publish AUR writero-desktop
+    needs: release
+    if: ${{ needs.release.outputs.aur_enabled == 'true' }}
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    env:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - name: Install toolchain
+        # base-devel (makepkg, fakeroot, sudo) ships in the image; git is
+        # needed before actions/checkout can run.
+        run: pacman -Syu --noconfirm --needed git openssh github-cli
+
+      - uses: actions/checkout@v4
+
+      - name: Download the release source tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download "$REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'writero-desktop-*.tar.gz' \
+            --pattern 'SHA256SUMS' \
+            --dir dist
+          ( cd dist && sha256sum -c SHA256SUMS )
+          version="${REF_NAME#v}"
+          sha="$(awk '{print $1}' dist/SHA256SUMS)"
+          [[ -n "$sha" ]] || { echo "no checksum in SHA256SUMS" >&2; exit 1; }
+          {
+            echo "PKG_VERSION=$version"
+            echo "PKG_SHA=$sha"
+          } >> "$GITHUB_ENV"
+
+      - name: Render PKGBUILD and generate .SRCINFO
+        # makepkg refuses to run as root, even for --printsrcinfo, so the
+        # generation runs as a non-root build user.
+        run: |
+          useradd -m builder
+          mkdir -p build
+          sed -e "s/^pkgver=.*/pkgver=${PKG_VERSION}/" \
+              -e "s/^sha256sums=.*/sha256sums=('${PKG_SHA}')/" \
+              packaging/arch/PKGBUILD > build/PKGBUILD
+          chown -R builder build
+          ( cd build && sudo -u builder bash -c 'makepkg --printsrcinfo > .SRCINFO' )
+
+      - name: Push to AUR
+        run: |
+          install -dm700 ~/.ssh
+          # Accept AUR's host key on first connect (TOFU); host identity
+          # checking stays enabled and the SSH key is the write gate.
+          export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          eval "$(ssh-agent -s)"
+          # Load the key from env via stdin: the private key never touches
+          # the filesystem.
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | ssh-add - >/dev/null
+          git config --global user.name "writero release bot"
+          git config --global user.email "maintainers@users.noreply.github.com"
+          git clone ssh://aur@aur.archlinux.org/writero-desktop.git aur-repo
+          cp build/PKGBUILD build/.SRCINFO aur-repo/
+          cd aur-repo
+          git add -A
+          # Idempotent: a rerun of an already-published tag is a clean no-op.
+          if git diff --cached --quiet; then
+            echo "aur-publish: writero-desktop already at ${PKG_VERSION}; nothing to push"
+          else
+            git commit -m "writero-desktop ${PKG_VERSION}"
+            git push
+          fi
