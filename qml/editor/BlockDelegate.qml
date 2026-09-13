@@ -39,6 +39,7 @@ Item {
 
     readonly property alias inputItem: input
     readonly property var controller: ListView.view ? ListView.view.controller : null
+    readonly property var syncEngine: ListView.view ? (ListView.view.syncEngine || null) : null
 
     width: ListView.view ? ListView.view.width : 0
     implicitHeight: blockBody.height + Theme.blockPaddingV * 2
@@ -548,6 +549,10 @@ Item {
         function openForBlock(blockIndex) {
             revisions = delegate.controller.blockRevisions(blockIndex)
             mediaVersions = delegate.controller.blockMediaVersions(blockIndex)
+            if (delegate.syncEngine && delegate.syncEngine.state !== "local"
+                && delegate.syncEngine.state !== "paused") {
+                delegate.syncEngine.loadRemoteHistory(blockIndex)
+            }
             open()
         }
 
@@ -594,6 +599,79 @@ Item {
 
             Label {
                 text: qsTr("Content history")
+                color: Theme.textMuted
+                font.bold: true
+            }
+
+            Label {
+                text: qsTr("Cloud content history")
+                visible: delegate.syncEngine && delegate.syncEngine.remoteContentVersions.length > 0
+                color: Theme.textMuted
+                font.bold: true
+            }
+
+            Repeater {
+                model: delegate.syncEngine ? delegate.syncEngine.remoteContentVersions : []
+                delegate: RowLayout {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: {
+                            const content = modelData.content || ""
+                            return (content.length > 70 ? content.left(69) + "\u2026" : content)
+                                   + "   " + (modelData.whodunnit || "")
+                        }
+                        color: Theme.text
+                        elide: Text.ElideRight
+                    }
+
+                    Button {
+                        text: qsTr("Restore")
+                        onClicked: {
+                            delegate.syncEngine.restoreRemoteVersion(delegate.index, modelData.id)
+                            historyDialog.close()
+                        }
+                    }
+                }
+            }
+
+            Label {
+                text: qsTr("Cloud media history")
+                visible: delegate.syncEngine && delegate.syncEngine.remoteMediaVersions.length > 0
+                color: Theme.textMuted
+                font.bold: true
+            }
+
+            Repeater {
+                model: delegate.syncEngine ? delegate.syncEngine.remoteMediaVersions : []
+                delegate: RowLayout {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: modelData.filename
+                        color: Theme.text
+                        elide: Text.ElideMiddle
+                    }
+
+                    Button {
+                        text: qsTr("Restore")
+                        onClicked: {
+                            delegate.syncEngine.restoreRemoteMediaVersion(delegate.index,
+                                                                          modelData.attachmentId)
+                            historyDialog.close()
+                        }
+                    }
+                }
+            }
+
+            Label {
+                text: qsTr("Local content history")
                 color: Theme.textMuted
                 font.bold: true
             }

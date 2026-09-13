@@ -350,6 +350,7 @@ ApplicationWindow {
                 id: editor
                 anchors.fill: parent
                 controller: document
+                syncEngine: sync
 
                 onAiRequested: (index) => {
                     ai.setCurrentBlock(index)

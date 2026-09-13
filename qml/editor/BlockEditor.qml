@@ -7,6 +7,7 @@ import Writero
 Item {
     id: root
     property var controller
+    property var syncEngine
     property int editingIndex: -1
     property int focusCursor: -1
 
@@ -90,6 +91,7 @@ Item {
 
         // Delegates reach editor state through the attached `ListView.view`.
         property var controller: root.controller
+        property var syncEngine: root.syncEngine
         property int editingIndex: root.editingIndex
         property int focusCursor: root.focusCursor
         property int dragSourceIndex: -1

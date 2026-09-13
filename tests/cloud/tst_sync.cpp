@@ -114,6 +114,7 @@ public:
             QJsonObject{{QStringLiteral("result"), result}}});
     }
 
+    QJsonArray lastMutations;
     int mutationCount = 0;
     int replayCount = 0;
 
@@ -223,6 +224,27 @@ private:
                            });
         }
 
+        if (remainder.endsWith(QLatin1String("/history")) && method == "GET") {
+            return respond(200, "OK",
+                           QJsonObject{
+                               {QStringLiteral("block_id"), QStringLiteral("r1")},
+                               {QStringLiteral("content_versions"),
+                                QJsonArray{QJsonObject{
+                                    {QStringLiteral("id"), 501},
+                                    {QStringLiteral("event"), QStringLiteral("update")},
+                                    {QStringLiteral("created_at"),
+                                     QStringLiteral("2026-09-11T10:00:00Z")},
+                                    {QStringLiteral("whodunnit"), QStringLiteral("browser")},
+                                    {QStringLiteral("attributes"),
+                                     QJsonObject{
+                                         {QStringLiteral("content"),
+                                          QStringLiteral("restored remote text")},
+                                         {QStringLiteral("block_type"), QStringLiteral("text")}}},
+                                }}},
+                               {QStringLiteral("media_versions"), QJsonArray{}},
+                           });
+        }
+
         if (remainder.endsWith(QLatin1String("/changes")) && method == "GET") {
             const qint64 cursor = QUrlQuery(QUrl(path)).queryItemValue(QStringLiteral("cursor"))
                                       .toLongLong();
@@ -257,6 +279,7 @@ private:
     {
         QJsonArray results;
         const QJsonArray mutations = body.value(QStringLiteral("mutations")).toArray();
+        lastMutations = mutations;
         for (const QJsonValue &value : mutations) {
             const QJsonObject mutation = value.toObject();
             const QString operationId = mutation.value(QStringLiteral("operation_id")).toString();
@@ -324,6 +347,29 @@ private:
                     {QStringLiteral("operation_id"), operationId},
                     {QStringLiteral("status"), QStringLiteral("applied")},
                     {QStringLiteral("block"), serialize(*block)},
+                };
+                m_receipts.insert(operationId, result);
+                results.append(result);
+                continue;
+            }
+
+            if (kind == QLatin1String("restore_block_version")) {
+                const QString blockId = mutation.value(QStringLiteral("block_id")).toString();
+                ServerBlock restored;
+                for (ServerBlock &block : document.blocks) {
+                    if (block.id != blockId)
+                        continue;
+                    block.content = QStringLiteral("restored remote text");
+                    ++block.lockVersion;
+                    restored = block;
+                    appendChange(document, QStringLiteral("block_update"),
+                                 QJsonObject{{QStringLiteral("block"), serialize(block)}});
+                    break;
+                }
+                const QJsonObject result{
+                    {QStringLiteral("operation_id"), operationId},
+                    {QStringLiteral("status"), QStringLiteral("applied")},
+                    {QStringLiteral("block"), serialize(restored)},
                 };
                 m_receipts.insert(operationId, result);
                 results.append(result);
@@ -596,6 +642,49 @@ private slots:
         QCOMPARE(fixture.api.mutationCount, mutationsAfterConnect);
         QCOMPARE(fixture.document.blocks()->get(0).value(QStringLiteral("content")).toString(),
                  QStringLiteral("private local edit"));
+    }
+
+    void remoteHistoryLoadsAndRestores()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
+        fixture.engine.connectDocument();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+
+        fixture.engine.loadRemoteHistory(0);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.remoteContentVersions().size(), 1, 5000);
+        QCOMPARE(fixture.engine.remoteContentVersions().first().toMap()
+                     .value(QStringLiteral("whodunnit")).toString(),
+                 QStringLiteral("browser"));
+
+        fixture.engine.restoreRemoteVersion(0, 501);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+        QCOMPARE(fixture.engine.pendingCount(), 0);
+
+        QJsonArray sent = fixture.api.lastMutations;
+        bool sawRestore = false;
+        for (const QJsonValue &value : sent) {
+            if (value.toObject().value(QStringLiteral("kind")).toString()
+                == QLatin1String("restore_block_version")) {
+                sawRestore = true;
+                QCOMPARE(value.toObject().value(QStringLiteral("version_id")).toInt(), 501);
+            }
+        }
+        QVERIFY(sawRestore);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            fixture.document.blocks()->get(0).value(QStringLiteral("content")).toString(),
+            QStringLiteral("restored remote text"), 5000);
+    }
+
+    void remoteHistoryIsEmptyForUnconnectedDocuments()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+
+        fixture.engine.loadRemoteHistory(0);
+        QVERIFY(fixture.engine.remoteContentVersions().isEmpty());
+        QVERIFY(fixture.engine.remoteMediaVersions().isEmpty());
     }
 
     void deletedCloudDocumentsKeepLocalWork()

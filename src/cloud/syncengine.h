@@ -36,6 +36,10 @@ class SyncEngine : public QObject
     Q_PROPERTY(int pendingCount READ pendingCount NOTIFY changed)
     Q_PROPERTY(int conflictCount READ conflictCount NOTIFY changed)
     Q_PROPERTY(QString lastError READ lastError NOTIFY changed)
+    Q_PROPERTY(QVariantList remoteContentVersions READ remoteContentVersions
+                   NOTIFY remoteHistoryChanged)
+    Q_PROPERTY(QVariantList remoteMediaVersions READ remoteMediaVersions
+                   NOTIFY remoteHistoryChanged)
 
 public:
     explicit SyncEngine(QObject *parent = nullptr);
@@ -53,18 +57,24 @@ public:
     int pendingCount() const { return m_pendingCount; }
     int conflictCount() const { return m_conflictCount; }
     QString lastError() const { return m_lastError; }
+    QVariantList remoteContentVersions() const { return m_remoteContentVersions; }
+    QVariantList remoteMediaVersions() const { return m_remoteMediaVersions; }
 
     Q_INVOKABLE void connectDocument();
     Q_INVOKABLE void syncNow();
     Q_INVOKABLE void disconnectDocument();
     Q_INVOKABLE void resolveConflict(const QString &conflictId, bool keepLocal);
     Q_INVOKABLE QVariantList conflictList() const;
+    Q_INVOKABLE void loadRemoteHistory(int blockIndex);
+    Q_INVOKABLE void restoreRemoteVersion(int blockIndex, qint64 versionId);
+    Q_INVOKABLE void restoreRemoteMediaVersion(int blockIndex, qint64 attachmentId);
     Q_INVOKABLE void refreshCounts();
 
 signals:
     void changed();
     void conflictsChanged();
     void cloudResultsChanged();
+    void remoteHistoryChanged();
     void notice(const QString &message);
 
 private:
@@ -113,6 +123,9 @@ private:
     BlockList m_snapshotBlocks;
     QHash<QString, int> m_snapshotLockVersions;
     QVector<PendingOperation> m_inFlightOperations;
+    QVariantList m_remoteContentVersions;
+    QVariantList m_remoteMediaVersions;
+    QString m_historyRemoteBlockId;
 };
 
 } // namespace writero

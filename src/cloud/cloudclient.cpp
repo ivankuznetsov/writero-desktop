@@ -102,6 +102,15 @@ void CloudClient::fetchChanges(const QString &documentId, qint64 cursor, qint64 
                [this](const QJsonObject &json) { emit changesReceived(json); });
 }
 
+void CloudClient::fetchHistory(const QString &documentId, const QString &remoteBlockId)
+{
+    const QNetworkRequest request = requestFor(
+        QStringLiteral("/api/desktop/v1/documents/%1/history?block_id=%2")
+            .arg(documentId, remoteBlockId));
+    finishJson(m_network->get(request), QStringLiteral("history"),
+               [this](const QJsonObject &json) { emit historyReceived(json); });
+}
+
 void CloudClient::postMutations(const QString &documentId, const QJsonArray &mutations)
 {
     const QJsonObject body{{QStringLiteral("mutations"), mutations}};

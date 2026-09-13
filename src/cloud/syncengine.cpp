@@ -58,6 +58,31 @@ SyncEngine::SyncEngine(QObject *parent)
         m_stage = Stage::Pushing;
         m_client.postMutations(m_cloudId, QJsonArray{mutation});
     });
+    connect(&m_client, &CloudClient::historyReceived, this, [this](const QJsonObject &body) {
+        m_remoteContentVersions.clear();
+        m_remoteMediaVersions.clear();
+        for (const QJsonValue &value : body.value(QStringLiteral("content_versions")).toArray()) {
+            const QJsonObject version = value.toObject();
+            const QJsonObject attributes = version.value(QStringLiteral("attributes")).toObject();
+            m_remoteContentVersions.append(QVariantMap{
+                {QStringLiteral("id"), version.value(QStringLiteral("id")).toVariant()},
+                {QStringLiteral("event"), version.value(QStringLiteral("event")).toString()},
+                {QStringLiteral("createdAt"), version.value(QStringLiteral("created_at")).toString()},
+                {QStringLiteral("whodunnit"), version.value(QStringLiteral("whodunnit")).toString()},
+                {QStringLiteral("content"), attributes.value(QStringLiteral("content")).toString()},
+            });
+        }
+        for (const QJsonValue &value : body.value(QStringLiteral("media_versions")).toArray()) {
+            const QJsonObject media = value.toObject();
+            m_remoteMediaVersions.append(QVariantMap{
+                {QStringLiteral("attachmentId"),
+                 media.value(QStringLiteral("attachment_id")).toVariant()},
+                {QStringLiteral("filename"), media.value(QStringLiteral("filename")).toString()},
+                {QStringLiteral("createdAt"), media.value(QStringLiteral("created_at")).toString()},
+            });
+        }
+        emit remoteHistoryChanged();
+    });
     connect(&m_client, &CloudClient::mediaDownloaded, this,
             [this](const QString &remoteBlockId, const QByteArray &data, const QString &mime) {
                 if (!m_workspace || !m_document || m_cloudId.isEmpty())
@@ -431,6 +456,24 @@ QJsonArray SyncEngine::buildBatch(const QVector<PendingOperation> &operations,
                             store->remoteVersionForLocal(documentId, localId));
             if (!afterRemote.isEmpty())
                 mutation.insert(QStringLiteral("after_block_id"), afterRemote);
+        } else if (operation.kind == QLatin1String("restore_block_version")) {
+            if (remoteId.isEmpty())
+                continue;
+            mutation.insert(QStringLiteral("kind"), operation.kind);
+            mutation.insert(QStringLiteral("block_id"), remoteId);
+            mutation.insert(QStringLiteral("lock_version"),
+                            store->remoteVersionForLocal(documentId, localId));
+            mutation.insert(QStringLiteral("version_id"),
+                            operation.payload.value(QStringLiteral("version_id")));
+        } else if (operation.kind == QLatin1String("restore_media_version")) {
+            if (remoteId.isEmpty())
+                continue;
+            mutation.insert(QStringLiteral("kind"), operation.kind);
+            mutation.insert(QStringLiteral("block_id"), remoteId);
+            mutation.insert(QStringLiteral("lock_version"),
+                            store->remoteVersionForLocal(documentId, localId));
+            mutation.insert(QStringLiteral("attachment_id"),
+                            operation.payload.value(QStringLiteral("attachment_id")));
         } else if (operation.kind == QLatin1String("update_title")) {
             mutation.insert(QStringLiteral("kind"), operation.kind);
             mutation.insert(QStringLiteral("title"),
@@ -495,6 +538,13 @@ void SyncEngine::applyMutationResults(const QJsonObject &body)
             m_workspace->store()->setRemoteVersion(
                 m_document->documentId(), localId,
                 block.value(QStringLiteral("lock_version")).toInt());
+            // Restores are requested without a local text change, so the
+            // resulting block snapshot is applied locally from the response.
+            if (it->kind == QLatin1String("restore_block_version")
+                || it->kind == QLatin1String("restore_media_version")) {
+                Block updated = ChangeReconciler::blockFromJson(block, localId);
+                m_document->session().applyRemoteUpdate(localId, updated);
+            }
         }
         if (result.contains(QStringLiteral("title_version"))) {
             const qint64 titleVersion = result.value(QStringLiteral("title_version")).toVariant().toLongLong();
@@ -727,6 +777,67 @@ void SyncEngine::disconnectDocument()
     setState(QStringLiteral("paused"));
     setBusy(false);
     refreshSummary();
+}
+
+void SyncEngine::loadRemoteHistory(int blockIndex)
+{
+    m_remoteContentVersions.clear();
+    m_remoteMediaVersions.clear();
+    emit remoteHistoryChanged();
+
+    if (!m_document || m_cloudId.isEmpty()
+        || blockIndex < 0 || blockIndex >= m_document->blocks()->rowCount()) {
+        return;
+    }
+    const QString localId =
+        m_document->blocks()->get(blockIndex).value(QStringLiteral("blockId")).toString();
+    const QString remoteId =
+        m_workspace->store()->remoteIdForLocal(m_document->documentId(), localId);
+    if (remoteId.isEmpty())
+        return;
+
+    m_historyRemoteBlockId = remoteId;
+    m_client.fetchHistory(m_cloudId, remoteId);
+}
+
+void SyncEngine::restoreRemoteVersion(int blockIndex, qint64 versionId)
+{
+    if (!m_document || blockIndex < 0 || blockIndex >= m_document->blocks()->rowCount())
+        return;
+    const QString localId =
+        m_document->blocks()->get(blockIndex).value(QStringLiteral("blockId")).toString();
+    if (m_workspace->store()->remoteIdForLocal(m_document->documentId(), localId).isEmpty())
+        return;
+
+    PendingOperation operation;
+    operation.operationId = newId();
+    operation.kind = QStringLiteral("restore_block_version");
+    operation.payload = QJsonObject{
+        {QStringLiteral("local_block_id"), localId},
+        {QStringLiteral("version_id"), versionId},
+    };
+    if (enqueueOperation(operation))
+        syncNow();
+}
+
+void SyncEngine::restoreRemoteMediaVersion(int blockIndex, qint64 attachmentId)
+{
+    if (!m_document || blockIndex < 0 || blockIndex >= m_document->blocks()->rowCount())
+        return;
+    const QString localId =
+        m_document->blocks()->get(blockIndex).value(QStringLiteral("blockId")).toString();
+    if (m_workspace->store()->remoteIdForLocal(m_document->documentId(), localId).isEmpty())
+        return;
+
+    PendingOperation operation;
+    operation.operationId = newId();
+    operation.kind = QStringLiteral("restore_media_version");
+    operation.payload = QJsonObject{
+        {QStringLiteral("local_block_id"), localId},
+        {QStringLiteral("attachment_id"), attachmentId},
+    };
+    if (enqueueOperation(operation))
+        syncNow();
 }
 
 QVariantList SyncEngine::conflictList() const
