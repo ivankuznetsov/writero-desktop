@@ -30,6 +30,8 @@ public:
         QString type;
         int position = 1;
         int lockVersion = 1;
+        QString mediaBlobId;
+        QString mediaContentType = QStringLiteral("image/png");
     };
     struct ServerChange
     {
@@ -93,6 +95,25 @@ public:
     void forceConflict(bool force) { m_forceConflict = force; }
     void setAccountEmail(const QString &email) { m_accountEmail = email; }
     void setDocumentMissing(bool missing) { m_documentMissing = missing; }
+    void setCursorExpired(bool expired) { m_cursorExpired = expired; }
+    void failNextMediaUpload() { m_mediaUploadFailures = 1; }
+    int snapshotCount = 0;
+
+    void appendMediaChange(const QString &documentId, const QString &remoteBlockId)
+    {
+        Document *doc = document(documentId);
+        if (!doc)
+            return;
+        for (ServerBlock &block : doc->blocks) {
+            if (block.id != remoteBlockId)
+                continue;
+            block.mediaBlobId = QStringLiteral("remote-blob");
+            ++block.lockVersion;
+            appendChange(*doc, QStringLiteral("block_update"),
+                         QJsonObject{{QStringLiteral("block"), serialize(block)}});
+            break;
+        }
+    }
 
     void appendResultChange(const QString &documentId, const QString &remoteBlockId,
                             const QString &resultId, const QString &content)
@@ -130,7 +151,7 @@ private:
 
     QJsonObject serialize(const ServerBlock &block) const
     {
-        return QJsonObject{
+        QJsonObject json{
             {QStringLiteral("id"), block.id},
             {QStringLiteral("position"), block.position},
             {QStringLiteral("block_type"), block.type},
@@ -138,6 +159,14 @@ private:
             {QStringLiteral("metadata"), QJsonObject{}},
             {QStringLiteral("lock_version"), block.lockVersion},
         };
+        if (!block.mediaBlobId.isEmpty()) {
+            json.insert(QStringLiteral("media"),
+                        QJsonObject{{QStringLiteral("blob_id"), block.mediaBlobId},
+                                    {QStringLiteral("filename"), QStringLiteral("remote.png")},
+                                    {QStringLiteral("content_type"), block.mediaContentType},
+                                    {QStringLiteral("byte_size"), 18}});
+        }
+        return json;
     }
 
     void appendChange(Document &document, const QString &event, const QJsonObject &payload)
@@ -185,6 +214,16 @@ private:
                            });
         }
 
+        if (method == "POST" && routePath == QLatin1String("/api/desktop/v1/media")) {
+            if (m_mediaUploadFailures > 0) {
+                --m_mediaUploadFailures;
+                return respond(500, "Error",
+                               QJsonObject{{QStringLiteral("error"), QStringLiteral("upload failed")}});
+            }
+            return respond(201, "Created",
+                           QJsonObject{{QStringLiteral("signed_id"), QStringLiteral("med-1")}});
+        }
+
         const QString prefix = QStringLiteral("/api/desktop/v1/documents/");
         if (!routePath.startsWith(prefix))
             return respond(404, "Not Found", QJsonObject{{QStringLiteral("error"), QStringLiteral("not found")}});
@@ -200,7 +239,17 @@ private:
             return respond(404, "Not Found", QJsonObject{{QStringLiteral("error"), QStringLiteral("not found")}});
         }
 
+        if (method == "GET" && remainder.contains(QLatin1String("/blocks/"))
+            && remainder.endsWith(QLatin1String("/media"))) {
+            const QByteArray body = QByteArrayLiteral("remote-media-bytes");
+            return QByteArrayLiteral("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n"
+                                     "Content-Length: ")
+                + QByteArray::number(body.size())
+                + QByteArrayLiteral("\r\nConnection: close\r\n\r\n") + body;
+        }
+
         if (remainder.endsWith(QLatin1String("/snapshot")) && method == "GET") {
+            ++snapshotCount;
             QJsonArray blocks;
             for (const ServerBlock &block : document->blocks)
                 blocks.append(serialize(block));
@@ -246,6 +295,11 @@ private:
         }
 
         if (remainder.endsWith(QLatin1String("/changes")) && method == "GET") {
+            if (m_cursorExpired) {
+                return respond(410, "Gone",
+                               QJsonObject{{QStringLiteral("error"), QStringLiteral("resnapshot_required")},
+                                           {QStringLiteral("reason"), QStringLiteral("retention")}});
+            }
             const qint64 cursor = QUrlQuery(QUrl(path)).queryItemValue(QStringLiteral("cursor"))
                                       .toLongLong();
             QJsonArray changes;
@@ -353,6 +407,29 @@ private:
                 continue;
             }
 
+            if (kind == QLatin1String("attach_media")) {
+                const QString blockId = mutation.value(QStringLiteral("block_id")).toString();
+                ServerBlock attached;
+                for (ServerBlock &block : document.blocks) {
+                    if (block.id != blockId)
+                        continue;
+                    block.mediaBlobId = QStringLiteral("med-1");
+                    ++block.lockVersion;
+                    attached = block;
+                    appendChange(document, QStringLiteral("block_update"),
+                                 QJsonObject{{QStringLiteral("block"), serialize(block)}});
+                    break;
+                }
+                const QJsonObject result{
+                    {QStringLiteral("operation_id"), operationId},
+                    {QStringLiteral("status"), QStringLiteral("applied")},
+                    {QStringLiteral("block"), serialize(attached)},
+                };
+                m_receipts.insert(operationId, result);
+                results.append(result);
+                continue;
+            }
+
             if (kind == QLatin1String("restore_block_version")) {
                 const QString blockId = mutation.value(QStringLiteral("block_id")).toString();
                 ServerBlock restored;
@@ -410,6 +487,8 @@ private:
     QHash<QString, QJsonObject> m_receipts;
     bool m_forceConflict = false;
     bool m_documentMissing = false;
+    bool m_cursorExpired = false;
+    int m_mediaUploadFailures = 0;
     QString m_accountEmail = QStringLiteral("stub@example.com");
     int m_remoteIds = 0;
 };
@@ -728,6 +807,98 @@ private slots:
         QCOMPARE(fixture.document.blocks()->get(0).value(QStringLiteral("content")).toString(),
                  QStringLiteral("offline local edit"));
         QVERIFY(fixture.engine.pendingCount() >= 1);
+    }
+
+    void localMediaUploadsOnAttach()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
+        fixture.engine.connectDocument();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+
+        QTemporaryDir mediaDir;
+        const QString imagePath = mediaDir.filePath(QStringLiteral("pixel.png"));
+        QFile image(imagePath);
+        QVERIFY(image.open(QIODevice::WriteOnly));
+        image.write(QByteArray("local-media-bytes"));
+        image.close();
+        QVERIFY(fixture.document.attachMedia(0, imagePath));
+        QVERIFY(fixture.document.saveIfDirty());
+
+        fixture.engine.syncNow();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+        QCOMPARE(fixture.engine.pendingCount(), 0);
+
+        StubDesktopApi::Document *cloud = fixture.api.document(QStringLiteral("cloud-1"));
+        QVERIFY(!cloud->blocks.first().mediaBlobId.isEmpty());
+    }
+
+    void failedMediaUploadsKeepThePendingOperation()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
+        fixture.engine.connectDocument();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+
+        QTemporaryDir mediaDir;
+        const QString imagePath = mediaDir.filePath(QStringLiteral("pixel.png"));
+        QFile image(imagePath);
+        QVERIFY(image.open(QIODevice::WriteOnly));
+        image.write(QByteArray("local-media-bytes"));
+        image.close();
+        QVERIFY(fixture.document.attachMedia(0, imagePath));
+        QVERIFY(fixture.document.saveIfDirty());
+
+        fixture.api.failNextMediaUpload();
+        fixture.engine.syncNow();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("offline"), 5000);
+        QVERIFY(fixture.engine.pendingCount() >= 1);
+
+        fixture.engine.syncNow();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+        QCOMPARE(fixture.engine.pendingCount(), 0);
+    }
+
+    void remoteMediaDownloadsIntoTheWorkspace()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
+        fixture.engine.connectDocument();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+
+        const QString remoteBlockId = fixture.workspace.store()->remoteIdForLocal(
+            fixture.document.documentId(), fixture.localBlockId());
+        fixture.api.appendMediaChange(QStringLiteral("cloud-1"), remoteBlockId);
+
+        fixture.engine.syncNow();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.document.blocks()->get(0).value(QStringLiteral("mediaId")).toLongLong() > 0,
+            5000);
+        const qint64 mediaId =
+            fixture.document.blocks()->get(0).value(QStringLiteral("mediaId")).toLongLong();
+        QVERIFY(!fixture.workspace.mediaPath(mediaId).isEmpty());
+    }
+
+    void expiredCursorsResnapshotWithoutLosingPendingWork()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
+        fixture.engine.connectDocument();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+        const int snapshotsAfterConnect = fixture.api.snapshotCount;
+
+        fixture.api.setCursorExpired(true);
+        fixture.engine.syncNow();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+        QVERIFY(fixture.api.snapshotCount > snapshotsAfterConnect);
+        QCOMPARE(fixture.document.blocks()->get(0).value(QStringLiteral("content")).toString(),
+                 QStringLiteral("local paragraph"));
     }
 
     void duplicateAcknowledgementsDoNotDoubleApply()

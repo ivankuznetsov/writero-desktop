@@ -85,7 +85,7 @@ claiming support.
 | U7 | on-demand image generation and explanation with catalog-based capability filtering (`tst_modelcatalog`, `tst_aiclient`, `tst_aicontroller`); research is a cloud function delivered as a synced article |
 | U8 | server: `test/integration/desktop_oauth_test.rb`, `capabilities_controller_test.rb`; desktop: `tests/cloud/tst_accountsession.cpp` |
 | U9 | server: `desktop_sync_contract_test.rb`, `desktop_change_capture_test.rb` |
-| U10 | desktop: `tests/cloud/tst_sync.cpp`, `tests/cloud/tst_reconciliation.cpp` |
+| U10 | desktop: `tests/cloud/tst_sync.cpp` (connect, replay, conflicts, media, remote results/history, account guards), `tests/cloud/tst_reconciliation.cpp` |
 | U11 | server: `hosted_ai_billing_test.rb`, `desktop_hosted_ai_test.rb` (text + image generation/explanation, reservations, settlement, upload ownership); desktop: `tests/ai/tst_hosted_jobs.cpp` |
 | U12 | not implemented; shares, schedules, and remaining parity rows |
 | U13 | `docs/verification.md`, `packaging/`, install rules in `CMakeLists.txt` |

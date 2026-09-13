@@ -28,9 +28,9 @@ Implemented so far:
 - [x] U8 — Service OAuth and capability API (desktop sign-in, desktop-scoped
   tokens, `/api/desktop/v1/capabilities`)
 - [x] U9 — Structured server snapshots, mutations, media, and change log
-- [x] U10 — Native cloud sync and conflict resolution (connect, push with
-  idempotent replay, pull, conflict review; editorial-result application and
-  the native remote-history browser remain)
+- [x] U10 — Native cloud sync and conflict resolution: connect, push with
+  idempotent replay, pull, media transfer, remote AI results, cloud history
+  browser/restore, conflict review, and account/ownership guards
 - [x] U11 — Hosted AI credits: rewrite, image generation, and image
   explanation with reservations, idempotent settlement, and desktop
   `WriteroProvider` (reference and vision images upload with account
