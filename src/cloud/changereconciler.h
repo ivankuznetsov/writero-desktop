@@ -24,6 +24,7 @@ struct ReconcileContext
     bool pendingTitle = false;
     std::function<void(const SyncConflict &)> recordConflict;
     std::function<void(const QString &remoteBlockId, const QJsonObject &media)> wantMedia;
+    std::function<void()> resultsChanged;
 };
 
 /// Applies remote snapshots and change events to the local document.
@@ -40,6 +41,7 @@ public:
     static void applyChange(const QJsonObject &change, const ReconcileContext &context);
 
 private:
+    static void applyResultChange(const QJsonObject &change, const ReconcileContext &context);
     static void noteMedia(const QJsonObject &blockJson, const QString &remoteBlockId,
                           const QJsonObject &mediaJson, const ReconcileContext &context);
     static void recordConflict(const ReconcileContext &context, const QString &kind,

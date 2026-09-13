@@ -64,6 +64,7 @@ public:
 signals:
     void changed();
     void conflictsChanged();
+    void cloudResultsChanged();
     void notice(const QString &message);
 
 private:
@@ -93,6 +94,7 @@ private:
     bool enqueueOperation(const PendingOperation &operation);
     bool enqueueReconnectUploads();
     void finishSync();
+    bool accountMatchesDocument(QString *message) const;
 
     Workspace *m_workspace = nullptr;
     AccountSession *m_account = nullptr;

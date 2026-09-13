@@ -27,7 +27,8 @@ public:
 
     /// Updates cloud connection state without recording undo/history.
     void setCloudState(const QString &cloudId, const QString &cloudState, qint64 syncCursor,
-                       qint64 feedGeneration, qint64 titleVersion);
+                       qint64 feedGeneration, qint64 titleVersion,
+                       const QString &accountEmail = QString());
     QString id() const { return m_document.id; }
 
     bool isDirty() const { return m_dirty; }

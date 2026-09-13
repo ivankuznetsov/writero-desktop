@@ -96,8 +96,21 @@ void SyncEngine::setAccount(AccountSession *account)
 {
     if (m_account == account)
         return;
+    if (m_account)
+        m_account->disconnect(this);
     m_account = account;
     m_client.setAccount(account);
+    if (m_account) {
+        connect(m_account, &AccountSession::changed, this, [this] {
+            if (!m_account || m_account->isConnected() || !m_busy)
+                return;
+            setBusy(false);
+            setError(QStringLiteral("Signed out. Local documents and queued changes are kept."));
+            const bool linked = m_document
+                && !m_document->session().document().cloudId.isEmpty();
+            setState(linked ? QStringLiteral("auth") : QStringLiteral("local"));
+        });
+    }
     emit changed();
 }
 
@@ -170,6 +183,24 @@ void SyncEngine::refreshCounts()
     refreshSummary();
 }
 
+bool SyncEngine::accountMatchesDocument(QString *message) const
+{
+    if (!m_document || !m_account)
+        return true;
+    const QString bound = m_document->session().document().syncAccountEmail;
+    if (bound.isEmpty())
+        return true;
+    const QString current = m_account->accountEmail();
+    if (current.isEmpty() || bound == current)
+        return true;
+    if (message) {
+        *message = QStringLiteral("This document is linked to %1. Sign in with that account "
+                                  "or duplicate the document.")
+                       .arg(bound);
+    }
+    return false;
+}
+
 void SyncEngine::connectDocument()
 {
     if (!m_workspace || !m_workspace->isReady() || !m_document || !m_account) {
@@ -182,6 +213,14 @@ void SyncEngine::connectDocument()
     }
     if (m_document->documentId().isEmpty())
         return;
+
+    QString guardMessage;
+    if (!accountMatchesDocument(&guardMessage)) {
+        setError(guardMessage);
+        setState(QStringLiteral("account_mismatch"));
+        setBusy(false);
+        return;
+    }
 
     setError({});
     setBusy(true);
@@ -213,9 +252,11 @@ void SyncEngine::handleDocumentCreated(const QJsonObject &body)
     m_cloudId = id;
 
     m_document->session().setCloudState(id, QStringLiteral("connected"), 0, generation,
-                                        titleVersion);
+                                        titleVersion,
+                                        m_account ? m_account->accountEmail() : QString());
     m_workspace->store()->updateDocumentSync(m_document->documentId(), id,
                                              QStringLiteral("connected"), 0, generation);
+    m_workspace->store()->saveDocument(m_document->session().document(), {}, {});
     enqueueReconnectUploads();
     setState(QStringLiteral("syncing"));
     pushNextBatch();
@@ -508,6 +549,7 @@ ReconcileContext SyncEngine::reconcileContext()
             context.pendingTitle = true;
     }
 
+    context.resultsChanged = [this] { emit cloudResultsChanged(); };
     context.recordConflict = [this](const SyncConflict &conflict) {
         m_workspace->store()->saveConflict(conflict);
         refreshSummary();
@@ -618,9 +660,11 @@ void SyncEngine::onSnapshotReceived(const QJsonObject &body)
     }
 
     m_document->session().setCloudState(m_cloudId, QStringLiteral("connected"), cursor, generation,
-                                        titleVersion);
+                                        titleVersion,
+                                        m_account ? m_account->accountEmail() : QString());
     m_workspace->store()->updateDocumentSync(m_document->documentId(), m_cloudId,
                                              QStringLiteral("connected"), cursor, generation);
+    m_workspace->store()->saveDocument(m_document->session().document(), {}, {});
     refreshSummary();
 
     if (!m_workspace->store()->pendingOperations(m_document->documentId()).isEmpty())
@@ -650,6 +694,17 @@ void SyncEngine::syncNow()
     }
     if (m_busy)
         return;
+    if (!m_account || m_account->accessToken().isEmpty() || !m_account->isConnected()) {
+        setError(QStringLiteral("Sign in to sync this document. Local work is kept."));
+        setState(QStringLiteral("auth"));
+        return;
+    }
+    QString guardMessage;
+    if (!accountMatchesDocument(&guardMessage)) {
+        setError(guardMessage);
+        setState(QStringLiteral("account_mismatch"));
+        return;
+    }
     setError({});
     setBusy(true);
     setState(QStringLiteral("syncing"));
@@ -840,6 +895,15 @@ void SyncEngine::onRequestFailed(const QString &operation, int status, const QJs
     }
     if (status == 410 && operation == QLatin1String("changes")) {
         resnapshot();
+        return;
+    }
+    if (status == 404
+        && (operation == QLatin1String("snapshot") || operation == QLatin1String("changes"))) {
+        setError(QStringLiteral("This document was deleted on the server. "
+                                "Your local copy and queued changes are kept."));
+        setState(QStringLiteral("deleted"));
+        setBusy(false);
+        refreshSummary();
         return;
     }
     if (status == 409 && operation == QLatin1String("mutations")) {

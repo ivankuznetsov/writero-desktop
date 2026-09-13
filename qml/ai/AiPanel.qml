@@ -369,8 +369,20 @@ Drawer {
                         color: Theme.danger
                     }
 
+                    Label {
+                        Layout.fillWidth: true
+                        visible: modelData.status === "completed"
+                                 && modelData.kind === "image_generation"
+                                 && (modelData.content || "") === ""
+                        text: qsTr("Generated in the browser. Download it from the web app.")
+                        color: Theme.textMuted
+                        wrapMode: Text.Wrap
+                    }
+
                     RowLayout {
                         visible: modelData.status === "completed"
+                                 && !(modelData.kind === "image_generation"
+                                      && (modelData.content || "") === "")
 
                         Button {
                             text: qsTr("Replace")

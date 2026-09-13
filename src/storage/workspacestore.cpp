@@ -98,7 +98,7 @@ bool WorkspaceStore::migrate()
     query.next();
     int version = query.value(0).toInt();
 
-    if (version >= 4)
+    if (version >= 5)
         return true;
 
     if (!m_database.transaction()) {
@@ -279,6 +279,26 @@ bool WorkspaceStore::migrate()
             m_database.rollback();
             return false;
         }
+        version = 4;
+    }
+
+    if (version < 5) {
+        const QStringList statements = {
+            QStringLiteral("ALTER TABLE ai_results ADD COLUMN remote_id TEXT NOT NULL DEFAULT ''"),
+            QStringLiteral("ALTER TABLE documents ADD COLUMN sync_account_email TEXT NOT NULL DEFAULT ''"),
+        };
+        for (const QString &statement : statements) {
+            if (!query.exec(statement)) {
+                m_lastError = query.lastError().text();
+                m_database.rollback();
+                return false;
+            }
+        }
+        if (!query.exec(QStringLiteral("PRAGMA user_version = 5"))) {
+            m_lastError = query.lastError().text();
+            m_database.rollback();
+            return false;
+        }
     }
 
     if (!m_database.commit()) {
@@ -328,8 +348,8 @@ bool WorkspaceStore::saveDocument(const Document &document, const QVector<Docume
     query.prepare(QStringLiteral(
         "UPDATE documents SET title = :title, revision = :revision, updated_at = :updated_at,"
         " cloud_id = :cloud_id, cloud_state = :cloud_state, sync_cursor = :sync_cursor,"
-        " feed_generation = :feed_generation, sync_title_version = :sync_title_version"
-        " WHERE id = :id"));
+        " feed_generation = :feed_generation, sync_title_version = :sync_title_version,"
+        " sync_account_email = :sync_account_email WHERE id = :id"));
     query.bindValue(QStringLiteral(":id"), document.id);
     query.bindValue(QStringLiteral(":title"), document.title);
     query.bindValue(QStringLiteral(":revision"), document.revision);
@@ -339,6 +359,7 @@ bool WorkspaceStore::saveDocument(const Document &document, const QVector<Docume
     query.bindValue(QStringLiteral(":sync_cursor"), document.syncCursor);
     query.bindValue(QStringLiteral(":feed_generation"), document.feedGeneration);
     query.bindValue(QStringLiteral(":sync_title_version"), document.syncTitleVersion);
+    query.bindValue(QStringLiteral(":sync_account_email"), nonNull(document.syncAccountEmail));
     if (!query.exec()) {
         m_lastError = query.lastError().text();
         m_database.rollback();
@@ -350,9 +371,10 @@ bool WorkspaceStore::saveDocument(const Document &document, const QVector<Docume
     if (query.numRowsAffected() == 0) {
         query.prepare(QStringLiteral(
             "INSERT INTO documents (id, title, revision, created_at, updated_at, cloud_id,"
-            " cloud_state, sync_cursor, feed_generation, sync_title_version) VALUES"
-            " (:id, :title, :revision, :created_at, :updated_at, :cloud_id, :cloud_state,"
-            " :sync_cursor, :feed_generation, :sync_title_version)"));
+            " cloud_state, sync_cursor, feed_generation, sync_title_version,"
+            " sync_account_email) VALUES (:id, :title, :revision, :created_at, :updated_at,"
+            " :cloud_id, :cloud_state, :sync_cursor, :feed_generation, :sync_title_version,"
+            " :sync_account_email)"));
         query.bindValue(QStringLiteral(":id"), document.id);
         query.bindValue(QStringLiteral(":title"), document.title);
         query.bindValue(QStringLiteral(":revision"), document.revision);
@@ -363,6 +385,7 @@ bool WorkspaceStore::saveDocument(const Document &document, const QVector<Docume
         query.bindValue(QStringLiteral(":sync_cursor"), document.syncCursor);
         query.bindValue(QStringLiteral(":feed_generation"), document.feedGeneration);
         query.bindValue(QStringLiteral(":sync_title_version"), document.syncTitleVersion);
+    query.bindValue(QStringLiteral(":sync_account_email"), nonNull(document.syncAccountEmail));
         if (!query.exec()) {
             m_lastError = query.lastError().text();
             m_database.rollback();
@@ -513,8 +536,8 @@ Document WorkspaceStore::loadDocument(const QString &documentId, QString *error)
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("SELECT id, title, revision, created_at, updated_at, cloud_id,"
-                                 " cloud_state, sync_cursor, feed_generation, sync_title_version"
-                                 " FROM documents WHERE id = :id"));
+                                 " cloud_state, sync_cursor, feed_generation, sync_title_version,"
+                                 " sync_account_email FROM documents WHERE id = :id"));
     query.bindValue(QStringLiteral(":id"), documentId);
     if (!query.exec() || !query.next()) {
         m_lastError = query.lastError().text().isEmpty() ? QStringLiteral("Document not found")
@@ -534,6 +557,7 @@ Document WorkspaceStore::loadDocument(const QString &documentId, QString *error)
     document.syncCursor = query.value(7).toLongLong();
     document.feedGeneration = query.value(8).toLongLong();
     document.syncTitleVersion = query.value(9).toLongLong();
+    document.syncAccountEmail = query.value(10).toString();
 
     QSqlQuery blocks(m_database);
     blocks.prepare(QStringLiteral(
@@ -814,9 +838,9 @@ bool WorkspaceStore::saveAiResult(const AiResultRecord &result)
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "INSERT INTO ai_results (id, document_id, block_id, kind, provider_id, model, prompt,"
-        " status, content, error, base_revision, batch_id, operation_id, created_at)"
+        " status, content, error, base_revision, batch_id, operation_id, remote_id, created_at)"
         " VALUES (:id, :document_id, :block_id, :kind, :provider_id, :model, :prompt, :status,"
-        " :content, :error, :base_revision, :batch_id, :operation_id, :created_at)"
+        " :content, :error, :base_revision, :batch_id, :operation_id, :remote_id, :created_at)"
         " ON CONFLICT(id) DO UPDATE SET status = :status, content = :content, error = :error"));
     query.bindValue(QStringLiteral(":id"), result.id);
     query.bindValue(QStringLiteral(":document_id"), result.documentId);
@@ -831,6 +855,7 @@ bool WorkspaceStore::saveAiResult(const AiResultRecord &result)
     query.bindValue(QStringLiteral(":base_revision"), result.baseRevision);
     query.bindValue(QStringLiteral(":batch_id"), nonNull(result.batchId));
     query.bindValue(QStringLiteral(":operation_id"), nonNull(result.operationId));
+    query.bindValue(QStringLiteral(":remote_id"), nonNull(result.remoteId));
     query.bindValue(QStringLiteral(":created_at"),
                     result.createdAt.isValid() ? result.createdAt.toString(Qt::ISODateWithMs)
                                                : nowIso());
@@ -849,7 +874,7 @@ QVector<WorkspaceStore::AiResultRecord> WorkspaceStore::aiResults(const QString 
     QSqlQuery query(m_database);
     QString sql = QStringLiteral(
         "SELECT id, document_id, block_id, kind, provider_id, model, prompt, status, content,"
-        " error, base_revision, batch_id, operation_id, created_at FROM ai_results"
+        " error, base_revision, batch_id, operation_id, remote_id, created_at FROM ai_results"
         " WHERE document_id = :document_id");
     if (!blockId.isEmpty())
         sql += QStringLiteral(" AND block_id = :block_id");
@@ -880,7 +905,8 @@ QVector<WorkspaceStore::AiResultRecord> WorkspaceStore::aiResults(const QString 
         record.baseRevision = query.value(10).toInt();
         record.batchId = query.value(11).toString();
         record.operationId = query.value(12).toString();
-        record.createdAt = QDateTime::fromString(query.value(13).toString(), Qt::ISODateWithMs);
+        record.remoteId = query.value(13).toString();
+        record.createdAt = QDateTime::fromString(query.value(14).toString(), Qt::ISODateWithMs);
         result.append(record);
     }
     return result;
@@ -1125,6 +1151,22 @@ bool WorkspaceStore::resolveConflict(const QString &conflictId)
         return false;
     }
     return true;
+}
+
+QString WorkspaceStore::aiResultIdForRemote(const QString &documentId,
+                                            const QString &remoteId) const
+{
+    if (remoteId.isEmpty())
+        return {};
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT id FROM ai_results WHERE document_id = :document_id AND remote_id = :remote_id"
+        " LIMIT 1"));
+    query.bindValue(QStringLiteral(":document_id"), documentId);
+    query.bindValue(QStringLiteral(":remote_id"), remoteId);
+    if (query.exec() && query.next())
+        return query.value(0).toString();
+    return {};
 }
 
 QString WorkspaceStore::setting(const QString &key, const QString &fallback) const

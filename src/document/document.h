@@ -27,6 +27,7 @@ public:
     qint64 syncCursor = 0;
     qint64 feedGeneration = 0;
     qint64 syncTitleVersion = 0;
+    QString syncAccountEmail;
 
     int indexOf(const QString &blockId) const;
     const Block *blockById(const QString &blockId) const;

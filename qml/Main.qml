@@ -64,6 +64,11 @@ ApplicationWindow {
         engine: sync
     }
 
+    Connections {
+        target: sync
+        function onCloudResultsChanged() { ai.refreshResults() }
+    }
+
     AccountSession {
         id: account
         Component.onCompleted: restoreSession()

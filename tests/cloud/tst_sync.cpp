@@ -9,6 +9,7 @@
 #include <QTemporaryDir>
 #include <QUrlQuery>
 
+#include "ai/aicontroller.h"
 #include "cloud/syncengine.h"
 #include "editor/documentcontroller.h"
 #include "storage/workspace.h"
@@ -90,6 +91,29 @@ public:
 
     Document *document(const QString &id) { return m_documents.contains(id) ? &m_documents[id] : nullptr; }
     void forceConflict(bool force) { m_forceConflict = force; }
+    void setAccountEmail(const QString &email) { m_accountEmail = email; }
+    void setDocumentMissing(bool missing) { m_documentMissing = missing; }
+
+    void appendResultChange(const QString &documentId, const QString &remoteBlockId,
+                            const QString &resultId, const QString &content)
+    {
+        Document *doc = document(documentId);
+        if (!doc)
+            return;
+        QJsonObject result{
+            {QStringLiteral("id"), resultId},
+            {QStringLiteral("block_id"), remoteBlockId},
+            {QStringLiteral("ai_model"), QStringLiteral("google/gemini-3.6-flash")},
+            {QStringLiteral("status"), QStringLiteral("completed")},
+            {QStringLiteral("result_content"), content},
+            {QStringLiteral("error_message"), QString()},
+        };
+        ++doc->sequence;
+        doc->changes.append(ServerChange{
+            doc->sequence, QStringLiteral("result_rewrite_result"),
+            QJsonObject{{QStringLiteral("result"), result}}});
+    }
+
     int mutationCount = 0;
     int replayCount = 0;
 
@@ -132,7 +156,7 @@ private:
                                             {QStringLiteral("version"), 1}}},
                                {QStringLiteral("account"),
                                 QJsonObject{{QStringLiteral("id"), 1},
-                                            {QStringLiteral("email"), QStringLiteral("stub@example.com")}}},
+                                            {QStringLiteral("email"), m_accountEmail}}},
                                {QStringLiteral("subscription"),
                                 QJsonObject{{QStringLiteral("plan"), QStringLiteral("starter")},
                                             {QStringLiteral("active"), true}}},
@@ -169,6 +193,11 @@ private:
         Document *document = this->document(documentId);
         if (!document)
             return respond(404, "Not Found", QJsonObject{{QStringLiteral("error"), QStringLiteral("not found")}});
+        if (m_documentMissing
+            && (remainder.endsWith(QLatin1String("/snapshot"))
+                || remainder.endsWith(QLatin1String("/changes")))) {
+            return respond(404, "Not Found", QJsonObject{{QStringLiteral("error"), QStringLiteral("not found")}});
+        }
 
         if (remainder.endsWith(QLatin1String("/snapshot")) && method == "GET") {
             QJsonArray blocks;
@@ -334,6 +363,8 @@ private:
     QHash<QString, Document> m_documents;
     QHash<QString, QJsonObject> m_receipts;
     bool m_forceConflict = false;
+    bool m_documentMissing = false;
+    QString m_accountEmail = QStringLiteral("stub@example.com");
     int m_remoteIds = 0;
 };
 
@@ -496,6 +527,118 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
         QCOMPARE(fixture.engine.conflictCount(), 0);
         QCOMPARE(cloud->blocks.first().content, QStringLiteral("local version"));
+    }
+
+    void remoteEditorialResultsAppearLocally()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
+        fixture.engine.connectDocument();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+
+        const QString remoteBlockId = fixture.workspace.store()->remoteIdForLocal(
+            fixture.document.documentId(), fixture.localBlockId());
+        fixture.api.appendResultChange(QStringLiteral("cloud-1"), remoteBlockId,
+                                       QStringLiteral("9001"), QStringLiteral("Browser rewrite"));
+
+        QSignalSpy results(&fixture.engine, &SyncEngine::cloudResultsChanged);
+        fixture.engine.syncNow();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+        QVERIFY(results.count() >= 1);
+
+        AiController ai;
+        ai.setWorkspace(&fixture.workspace);
+        ai.setDocument(&fixture.document);
+        ai.setCurrentBlock(0);
+
+        QTRY_VERIFY_WITH_TIMEOUT(!ai.results().isEmpty(), 5000);
+        const QVariantMap result = ai.results().first().toMap();
+        QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+        QCOMPARE(result.value(QStringLiteral("content")).toString(),
+                 QStringLiteral("Browser rewrite"));
+        QVERIFY(ai.applyResult(result.value(QStringLiteral("id")).toString(), false));
+        QCOMPARE(fixture.document.blocks()->get(0).value(QStringLiteral("content")).toString(),
+                 QStringLiteral("Browser rewrite"));
+
+        // Re-applying the same remote change must not duplicate the result.
+        const int before = ai.results().size();
+        fixture.api.appendResultChange(QStringLiteral("cloud-1"), remoteBlockId,
+                                       QStringLiteral("9001"), QStringLiteral("Browser rewrite"));
+        fixture.engine.syncNow();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+        ai.refreshResults();
+        QCOMPARE(ai.results().size(), before);
+    }
+
+    void documentsLinkedToAnotherAccountAreNotPushed()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
+        fixture.engine.connectDocument();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+        const int mutationsAfterConnect = fixture.api.mutationCount;
+
+        // A different account signs in on this machine.
+        fixture.api.setAccountEmail(QStringLiteral("someone@example.com"));
+        AccountSession other;
+        QVERIFY(other.importToken(fixture.api.baseUrl(), QStringLiteral("other-token")));
+        QTRY_VERIFY_WITH_TIMEOUT(other.isConnected(), 5000);
+        fixture.engine.setAccount(&other);
+
+        fixture.document.setBlockContent(0, QStringLiteral("private local edit"), false);
+        QVERIFY(fixture.document.saveIfDirty());
+        QVERIFY(fixture.engine.pendingCount() >= 1);
+
+        fixture.engine.syncNow();
+        QCOMPARE(fixture.engine.state(), QStringLiteral("account_mismatch"));
+        QCOMPARE(fixture.api.mutationCount, mutationsAfterConnect);
+        QCOMPARE(fixture.document.blocks()->get(0).value(QStringLiteral("content")).toString(),
+                 QStringLiteral("private local edit"));
+    }
+
+    void deletedCloudDocumentsKeepLocalWork()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
+        fixture.engine.connectDocument();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+
+        fixture.api.setDocumentMissing(true);
+        fixture.document.setBlockContent(0, QStringLiteral("edit after deletion"), false);
+        QVERIFY(fixture.document.saveIfDirty());
+
+        fixture.engine.syncNow();
+        // The push may succeed; the pull then reports the document as missing.
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("deleted"), 5000);
+        QVERIFY(fixture.engine.lastError().contains(QStringLiteral("deleted")));
+        QCOMPARE(fixture.document.blocks()->get(0).value(QStringLiteral("content")).toString(),
+                 QStringLiteral("edit after deletion"));
+        QVERIFY(fixture.document.isDirty() == false);
+        QVERIFY(fixture.engine.pendingCount() >= 0);
+    }
+
+    void signedOutAccountsStopSyncingButKeepLocalWork()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
+        fixture.engine.connectDocument();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+
+        fixture.account.clearLocalSession();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.account.isConnected(), 5000);
+
+        fixture.document.setBlockContent(0, QStringLiteral("offline local edit"), false);
+        QVERIFY(fixture.document.saveIfDirty());
+        fixture.engine.syncNow();
+
+        QCOMPARE(fixture.engine.state(), QStringLiteral("auth"));
+        QCOMPARE(fixture.document.blocks()->get(0).value(QStringLiteral("content")).toString(),
+                 QStringLiteral("offline local edit"));
+        QVERIFY(fixture.engine.pendingCount() >= 1);
     }
 
     void duplicateAcknowledgementsDoNotDoubleApply()

@@ -140,6 +140,61 @@ void ChangeReconciler::applySnapshot(const QJsonObject &snapshot, const Reconcil
     context.session->applyRemoteReset(merged, remoteTitle, {});
 }
 
+void ChangeReconciler::applyResultChange(const QJsonObject &change, const ReconcileContext &context)
+{
+    const QString event = change.value(QStringLiteral("event")).toString();
+    const QJsonObject result = change.value(QStringLiteral("payload"))
+                                   .toObject()
+                                   .value(QStringLiteral("result"))
+                                   .toObject();
+    const QString remoteId = result.value(QStringLiteral("id")).toString();
+    if (remoteId.isEmpty())
+        return;
+
+    const QString remoteBlockId = result.value(QStringLiteral("block_id")).toString();
+    const QString localBlockId =
+        context.store->localIdForRemote(context.documentId, remoteBlockId);
+    if (localBlockId.isEmpty())
+        return;
+
+    QString kind;
+    if (event == QLatin1String("result_rewrite_result"))
+        kind = QStringLiteral("rewrite");
+    else if (event == QLatin1String("result_research_result"))
+        kind = QStringLiteral("research");
+    else if (event == QLatin1String("result_image_generation_result"))
+        kind = QStringLiteral("image_generation");
+    else if (event == QLatin1String("result_image_explanation_result"))
+        kind = QStringLiteral("image_explanation");
+    else
+        return;
+
+    WorkspaceStore::AiResultRecord record;
+    record.id = context.store->aiResultIdForRemote(context.documentId, remoteId);
+    if (record.id.isEmpty())
+        record.id = newId();
+    record.documentId = context.documentId;
+    record.blockId = localBlockId;
+    record.kind = kind;
+    record.providerId = QStringLiteral("writero");
+    record.model = result.value(QStringLiteral("ai_model")).toString();
+    record.status = result.value(QStringLiteral("status")).toString();
+    record.error = result.value(QStringLiteral("error_message")).toString();
+    record.remoteId = remoteId;
+    if (kind == QLatin1String("image_explanation"))
+        record.content = result.value(QStringLiteral("explanation")).toString();
+    else if (kind != QLatin1String("image_generation"))
+        record.content = result.value(QStringLiteral("result_content")).toString();
+    record.createdAt = QDateTime::fromString(
+        change.value(QStringLiteral("created_at")).toString(), Qt::ISODateWithMs);
+    if (!record.createdAt.isValid())
+        record.createdAt = QDateTime::currentDateTimeUtc();
+
+    context.store->saveAiResult(record);
+    if (context.resultsChanged)
+        context.resultsChanged();
+}
+
 void ChangeReconciler::applyChange(const QJsonObject &change, const ReconcileContext &context)
 {
     if (!context.session || !context.store)
@@ -208,6 +263,11 @@ void ChangeReconciler::applyChange(const QJsonObject &change, const ReconcileCon
                                  .value(QStringLiteral("position"))
                                  .toInt();
         context.session->applyRemoteMove(localId, qMax(0, position - 1));
+        return;
+    }
+
+    if (event.startsWith(QLatin1String("result_"))) {
+        applyResultChange(change, context);
         return;
     }
 

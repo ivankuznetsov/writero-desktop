@@ -107,6 +107,7 @@ public:
         int baseRevision = 0;
         QString batchId;
         QString operationId;
+        QString remoteId;
         QDateTime createdAt;
     };
 
@@ -151,6 +152,8 @@ public:
     QSet<QString> referencedMediaShas() const;
     bool addMediaVersion(const QString &blockId, qint64 mediaId);
     QVector<qint64> mediaVersions(const QString &blockId) const;
+
+    QString aiResultIdForRemote(const QString &documentId, const QString &remoteId) const;
 
     QString setting(const QString &key, const QString &fallback = QString()) const;
     bool setSetting(const QString &key, const QString &value);

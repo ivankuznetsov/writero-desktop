@@ -39,7 +39,7 @@ private slots:
         document.blocks[2].setLanguage(QStringLiteral("python"));
         QVERIFY(store.createDocument(document, &error));
 
-        QVERIFY(store.saveDocument(document, {}, {}, &error));
+        QVERIFY2(store.saveDocument(document, {}, {}, &error), qPrintable(error));
 
         const Document loaded = store.loadDocument(document.id, &error);
         QCOMPARE(loaded.title, document.title);

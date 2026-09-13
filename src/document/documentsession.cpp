@@ -31,13 +31,15 @@ void DocumentSession::load(const Document &document)
 
 void DocumentSession::setCloudState(const QString &cloudId, const QString &cloudState,
                                     qint64 syncCursor, qint64 feedGeneration,
-                                    qint64 titleVersion)
+                                    qint64 titleVersion, const QString &accountEmail)
 {
     m_document.cloudId = cloudId;
     m_document.cloudState = cloudState;
     m_document.syncCursor = syncCursor;
     m_document.feedGeneration = feedGeneration;
     m_document.syncTitleVersion = titleVersion;
+    if (!accountEmail.isNull())
+        m_document.syncAccountEmail = accountEmail;
     emit syncStateChanged();
 }
 
