@@ -41,14 +41,21 @@ public:
     ~WriteroProvider() override;
 
     void submit(const QString &operationId, const QString &kind, const QString &model,
-                const QString &prompt, const HostedContext &context);
+                const QString &prompt, const HostedContext &context,
+                const QString &referenceSignedId = {}, const QString &imageSignedId = {});
+    void uploadMedia(const QString &requestId, const QString &path);
+    void fetchResultMedia(const QString &operationId, qint64 jobId);
     void cancel(const QString &operationId);
     bool isRunning(const QString &operationId) const;
 
 signals:
     void finished(const QString &operationId, const QString &content, const QJsonObject &usage);
+    void imageFinished(const QString &operationId, const QByteArray &data,
+                       const QString &contentType);
     void failed(const QString &operationId, const QString &error);
     void ambiguous(const QString &operationId, const QString &error);
+    void mediaUploaded(const QString &requestId, const QString &signedId);
+    void mediaUploadFailed(const QString &requestId, const QString &error);
 
 private:
     AccountSession *m_account = nullptr;

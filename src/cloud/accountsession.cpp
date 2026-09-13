@@ -369,6 +369,12 @@ void AccountSession::applyCapabilities(const QByteArray &body)
     m_hostedModels.clear();
     for (const QJsonValue &value : hostedAi.value(QStringLiteral("models")).toArray())
         m_hostedModels.append(value.toString());
+    m_hostedImageModels.clear();
+    for (const QJsonValue &value : hostedAi.value(QStringLiteral("image_models")).toArray())
+        m_hostedImageModels.append(value.toString());
+    m_hostedExplanationModels.clear();
+    for (const QJsonValue &value : hostedAi.value(QStringLiteral("explanation_models")).toArray())
+        m_hostedExplanationModels.append(value.toString());
 
     m_entitlements.clear();
     for (const QJsonValue &value : root.value(QStringLiteral("entitlements")).toArray())
@@ -439,6 +445,8 @@ void AccountSession::signOut()
         m_remainingCreditUsd = 0.0;
         m_entitlements.clear();
         m_hostedModels.clear();
+        m_hostedImageModels.clear();
+        m_hostedExplanationModels.clear();
         m_protocolVersion = 0;
         setError({});
         setBusy(false);

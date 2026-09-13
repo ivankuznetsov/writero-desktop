@@ -22,7 +22,7 @@ namespace {
 class StubHostedApi : public QTcpServer
 {
 public:
-    enum class Outcome { Completed, Failed, Ambiguous, ServerError };
+    enum class Outcome { Completed, ImageCompleted, Failed, Ambiguous, ServerError };
 
     explicit StubHostedApi(QObject *parent = nullptr)
         : QTcpServer(parent)
@@ -56,7 +56,16 @@ public:
                 if (method == "GET" && path.startsWith(QLatin1String("/api/desktop/v1/capabilities"))) {
                     respond(socket, 200, capabilitiesBody());
                 } else if (method == "POST"
+                           && path.startsWith(QLatin1String("/api/desktop/v1/media"))) {
+                    respond(socket, 201,
+                            QJsonObject{{QStringLiteral("signed_id"), QStringLiteral("sig-1")}});
+                } else if (method == "GET"
+                           && path.contains(QLatin1String("/ai_jobs/"))
+                           && path.endsWith(QLatin1String("/media"))) {
+                    respondRaw(socket, 200, "image/png", QByteArrayLiteral("generated-png"));
+                } else if (method == "POST"
                            && path.startsWith(QLatin1String("/api/desktop/v1/ai_jobs"))) {
+                    lastJobBody = lastBody;
                     respond(socket, 200, jobBody());
                 } else {
                     respond(socket, 404, QJsonObject{{QStringLiteral("error"), QStringLiteral("not found")}});
@@ -72,6 +81,7 @@ public:
     }
 
     QJsonObject lastBody;
+    QJsonObject lastJobBody;
     int requestCount = 0;
     Outcome outcome = Outcome::Completed;
 
@@ -93,7 +103,11 @@ private:
                          {QStringLiteral("remaining_credit_usd"), 9.99},
                          {QStringLiteral("models"),
                           QJsonArray{QStringLiteral("google/gemini-3.6-flash"),
-                                     QStringLiteral("x-ai/grok-4.5")}}}},
+                                     QStringLiteral("x-ai/grok-4.5")}},
+                         {QStringLiteral("image_models"),
+                          QJsonArray{QStringLiteral("google/gemini-3.1-flash-image-preview")}},
+                         {QStringLiteral("explanation_models"),
+                          QJsonArray{QStringLiteral("google/gemini-3.6-flash")}}}},
         };
     }
 
@@ -110,6 +124,15 @@ private:
                  QJsonObject{{QStringLiteral("input_tokens"), 10},
                              {QStringLiteral("output_tokens"), 5},
                              {QStringLiteral("cost_usd"), 0.0001}}},
+            };
+        case Outcome::ImageCompleted:
+            return QJsonObject{
+                {QStringLiteral("id"), 1},
+                {QStringLiteral("status"), QStringLiteral("completed")},
+                {QStringLiteral("content"), QString()},
+                {QStringLiteral("settled"), true},
+                {QStringLiteral("media_available"), true},
+                {QStringLiteral("media_url"), QStringLiteral("/api/desktop/v1/ai_jobs/1/media")},
             };
         case Outcome::Failed:
             return QJsonObject{
@@ -129,6 +152,17 @@ private:
             return {};
         }
         return {};
+    }
+
+    static void respondRaw(QTcpSocket *socket, int status, const QByteArray &contentType,
+                           const QByteArray &body)
+    {
+        socket->write(QByteArrayLiteral("HTTP/1.1 ") + QByteArray::number(status)
+                      + QByteArrayLiteral(" OK\r\nContent-Type: ") + contentType
+                      + QByteArrayLiteral("\r\nContent-Length: ") + QByteArray::number(body.size())
+                      + QByteArrayLiteral("\r\nConnection: close\r\n\r\n") + body);
+        socket->flush();
+        socket->disconnectFromHost();
     }
 
     static void respond(QTcpSocket *socket, int status, const QJsonObject &body)
@@ -260,10 +294,11 @@ private slots:
                  QStringLiteral("Hosted result"));
     }
 
-    void controllerReportsHostedImageToolsAsUnavailable()
+    void controllerStoresHostedGeneratedImageAndAppliesIt()
     {
         StubHostedApi api;
         QVERIFY(api.listen());
+        api.outcome = StubHostedApi::Outcome::ImageCompleted;
 
         QTemporaryDir dir;
         Workspace workspace;
@@ -271,7 +306,7 @@ private slots:
 
         DocumentController document;
         document.setWorkspace(&workspace);
-        document.createDocument(QStringLiteral("Hosted doc"));
+        document.createDocument(QStringLiteral("Hosted image doc"));
 
         AccountSession account;
         QVERIFY(account.importToken(api.baseUrl(), QStringLiteral("token")));
@@ -283,13 +318,102 @@ private slots:
         ai.setAccount(&account);
 
         ai.runImageGeneration(0, QStringLiteral("writero"),
-                              QStringLiteral("google/gemini-2.5-flash-image"),
-                              QStringLiteral("a cat"));
+                              QStringLiteral("google/gemini-3.1-flash-image-preview"),
+                              QStringLiteral("a cat"), false);
         QTRY_VERIFY_WITH_TIMEOUT(!ai.results().isEmpty(), 5000);
-        const QVariantMap result = ai.results().first().toMap();
-        QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("failed"));
-        QVERIFY(result.value(QStringLiteral("error")).toString().contains(
-            QStringLiteral("not available")));
+        QTRY_COMPARE_WITH_TIMEOUT(ai.results().first().toMap()
+                                      .value(QStringLiteral("status")).toString(),
+                                  QStringLiteral("completed"), 5000);
+
+        const QString resultId =
+            ai.results().first().toMap().value(QStringLiteral("id")).toString();
+        QVERIFY(ai.applyResult(resultId, false));
+        const QVariantMap block = document.blocks()->get(0);
+        QCOMPARE(block.value(QStringLiteral("blockType")).toString(), QStringLiteral("media"));
+        QVERIFY(block.value(QStringLiteral("mediaId")).toLongLong() > 0);
+        QVERIFY(!workspace.mediaPath(block.value(QStringLiteral("mediaId")).toLongLong())
+                     .isEmpty());
+    }
+
+    void controllerExplainsHostedImage()
+    {
+        StubHostedApi api;
+        QVERIFY(api.listen());
+        api.outcome = StubHostedApi::Outcome::Completed;
+
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+
+        DocumentController document;
+        document.setWorkspace(&workspace);
+        document.createDocument(QStringLiteral("Hosted vision doc"));
+
+        const QString imagePath = dir.filePath(QStringLiteral("pixel.png"));
+        QFile image(imagePath);
+        QVERIFY(image.open(QIODevice::WriteOnly));
+        image.write(QByteArray("png-bytes"));
+        image.close();
+        QVERIFY(document.attachMedia(0, imagePath));
+
+        AccountSession account;
+        QVERIFY(account.importToken(api.baseUrl(), QStringLiteral("token")));
+        QTRY_VERIFY_WITH_TIMEOUT(account.isConnected(), 5000);
+
+        AiController ai;
+        ai.setWorkspace(&workspace);
+        ai.setDocument(&document);
+        ai.setAccount(&account);
+
+        ai.runImageExplanation(0, QStringLiteral("writero"),
+                               QStringLiteral("google/gemini-3.6-flash"),
+                               QStringLiteral("What is this?"));
+        QTRY_VERIFY_WITH_TIMEOUT(!ai.results().isEmpty(), 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(ai.results().first().toMap()
+                                      .value(QStringLiteral("status")).toString(),
+                                  QStringLiteral("completed"), 5000);
+        QCOMPARE(ai.results().first().toMap().value(QStringLiteral("content")).toString(),
+                 QStringLiteral("Hosted result"));
+        QCOMPARE(api.lastJobBody.value(QStringLiteral("kind")).toString(),
+                 QStringLiteral("image_explanation"));
+        QCOMPARE(api.lastJobBody.value(QStringLiteral("image_signed_id")).toString(),
+                 QStringLiteral("sig-1"));
+    }
+
+    void providerUploadsMediaAndDownloadsGeneratedImage()
+    {
+        StubHostedApi api;
+        QVERIFY(api.listen());
+        api.outcome = StubHostedApi::Outcome::ImageCompleted;
+
+        AccountSession account;
+        QVERIFY(account.importToken(api.baseUrl(), QStringLiteral("token")));
+        QTRY_VERIFY_WITH_TIMEOUT(account.isConnected(), 5000);
+
+        QTemporaryDir dir;
+        const QString imagePath = dir.filePath(QStringLiteral("ref.png"));
+        QFile image(imagePath);
+        QVERIFY(image.open(QIODevice::WriteOnly));
+        image.write(QByteArray("reference-bytes"));
+        image.close();
+
+        WriteroProvider provider(&account);
+        QSignalSpy uploaded(&provider, &WriteroProvider::mediaUploaded);
+        provider.uploadMedia(QStringLiteral("up-1"), imagePath);
+        QTRY_COMPARE_WITH_TIMEOUT(uploaded.count(), 1, 5000);
+        QCOMPARE(uploaded.first().at(1).toString(), QStringLiteral("sig-1"));
+
+        QSignalSpy images(&provider, &WriteroProvider::imageFinished);
+        HostedContext context;
+        context.blockType = QStringLiteral("media");
+        provider.submit(QStringLiteral("op-img"), QStringLiteral("image_generation"),
+                        QStringLiteral("google/gemini-3.1-flash-image-preview"),
+                        QStringLiteral("restyle"), context, QStringLiteral("sig-1"), {});
+
+        QTRY_COMPARE_WITH_TIMEOUT(images.count(), 1, 5000);
+        QCOMPARE(images.first().at(1).toByteArray(), QByteArray("generated-png"));
+        QCOMPARE(api.lastJobBody.value(QStringLiteral("reference_signed_id")).toString(),
+                 QStringLiteral("sig-1"));
     }
 };
 

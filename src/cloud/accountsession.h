@@ -36,6 +36,8 @@ class AccountSession : public QObject
     Q_PROPERTY(bool hostedAiEnabled READ hostedAiEnabled NOTIFY changed)
     Q_PROPERTY(double remainingCreditUsd READ remainingCreditUsd NOTIFY changed)
     Q_PROPERTY(QStringList hostedModels READ hostedModels NOTIFY changed)
+    Q_PROPERTY(QStringList hostedImageModels READ hostedImageModels NOTIFY changed)
+    Q_PROPERTY(QStringList hostedExplanationModels READ hostedExplanationModels NOTIFY changed)
     Q_PROPERTY(QVariantList entitlements READ entitlements NOTIFY changed)
     Q_PROPERTY(int protocolVersion READ protocolVersion NOTIFY changed)
     Q_PROPERTY(QString lastError READ lastError NOTIFY changed)
@@ -55,6 +57,8 @@ public:
     bool hostedAiEnabled() const { return m_hostedAiEnabled; }
     double remainingCreditUsd() const { return m_remainingCreditUsd; }
     QStringList hostedModels() const { return m_hostedModels; }
+    QStringList hostedImageModels() const { return m_hostedImageModels; }
+    QStringList hostedExplanationModels() const { return m_hostedExplanationModels; }
     QVariantList entitlements() const { return m_entitlements; }
     int protocolVersion() const { return m_protocolVersion; }
     QString lastError() const { return m_lastError; }
@@ -124,6 +128,8 @@ private:
     double m_remainingCreditUsd = 0.0;
     QVariantList m_entitlements;
     QStringList m_hostedModels;
+    QStringList m_hostedImageModels;
+    QStringList m_hostedExplanationModels;
     int m_protocolVersion = 0;
     QString m_lastError;
 };

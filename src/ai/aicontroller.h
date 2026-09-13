@@ -85,8 +85,11 @@ private:
                                                 const QString &operationId = {});
     QString runHostedRewrite(int index, const QString &blockId, const QStringList &models,
                              const QString &prompt);
-    QString hostedUnsupported(int index, const QString &kind, const QString &providerId,
-                              const QString &model, const QString &prompt);
+    QString runHostedImage(int index, const QString &kind, const QString &providerId,
+                           const QString &model, const QString &prompt,
+                           bool useCurrentAsReference);
+    void submitHostedImage(const QString &operationId, const QString &kind, const QString &model,
+                           const QString &prompt, qint64 localMediaId);
     static QStringList surroundingText(const Document &document, const Block &block);
     AiClient *makeClient(const QString &providerId, const QString &model);
     void executeChat(const WorkspaceStore::AiResultRecord &record,
@@ -106,6 +109,16 @@ private:
     AccountSession *m_account = nullptr;
     WriteroProvider *m_hosted = nullptr;
     QHash<QString, QString> m_hostedResultIds;
+
+    struct HostedUpload
+    {
+        QString operationId;
+        QString kind;
+        QString model;
+        QString prompt;
+        bool reference = false;
+    };
+    QHash<QString, HostedUpload> m_hostedUploads;
     QVariantList m_results;
     QVector<WorkspaceStore::AiResultRecord> m_resultRecords;
     int m_currentBlock = -1;

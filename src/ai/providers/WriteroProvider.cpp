@@ -4,6 +4,9 @@
 
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QFile>
+#include <QFileInfo>
+#include <QHttpMultiPart>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -56,7 +59,8 @@ void WriteroProvider::cancel(const QString &operationId)
 
 void WriteroProvider::submit(const QString &operationId, const QString &kind,
                              const QString &model, const QString &prompt,
-                             const HostedContext &context)
+                             const HostedContext &context,
+                             const QString &referenceSignedId, const QString &imageSignedId)
 {
     if (!m_account || m_account->accessToken().isEmpty()) {
         emit failed(operationId, QStringLiteral("Sign in to use hosted AI."));
@@ -81,6 +85,8 @@ void WriteroProvider::submit(const QString &operationId, const QString &kind,
         {QStringLiteral("kind"), kind},
         {QStringLiteral("model"), model},
         {QStringLiteral("prompt"), prompt},
+        {QStringLiteral("reference_signed_id"), referenceSignedId},
+        {QStringLiteral("image_signed_id"), imageSignedId},
         {QStringLiteral("context"),
          QJsonObject{
              {QStringLiteral("content"), context.content},
@@ -123,6 +129,10 @@ void WriteroProvider::submit(const QString &operationId, const QString &kind,
 
         const QString status = json.value(QStringLiteral("status")).toString();
         if (status == QLatin1String("completed")) {
+            if (json.value(QStringLiteral("media_available")).toBool()) {
+                fetchResultMedia(operationId, json.value(QStringLiteral("id")).toVariant().toLongLong());
+                return;
+            }
             emit finished(operationId, json.value(QStringLiteral("content")).toString(),
                           json.value(QStringLiteral("usage")).toObject());
         } else if (status == QLatin1String("ambiguous")) {
@@ -134,6 +144,85 @@ void WriteroProvider::submit(const QString &operationId, const QString &kind,
                         json.value(QStringLiteral("error"))
                             .toString(QStringLiteral("The hosted operation failed.")));
         }
+    });
+}
+
+void WriteroProvider::uploadMedia(const QString &requestId, const QString &path)
+{
+    if (!m_account || m_account->accessToken().isEmpty()) {
+        emit mediaUploadFailed(requestId, QStringLiteral("Sign in to use hosted AI."));
+        return;
+    }
+
+    QFile *file = new QFile(path);
+    if (!file->open(QIODevice::ReadOnly)) {
+        delete file;
+        emit mediaUploadFailed(requestId, QStringLiteral("Cannot read the media file."));
+        return;
+    }
+
+    QHttpMultiPart *multipart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    QHttpPart part;
+    part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                   QStringLiteral("form-data; name=\"file\"; filename=\"%1\"")
+                       .arg(QFileInfo(path).fileName()));
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    part.setHeader(QNetworkRequest::ContentTypeHeader,
+                   suffix == QLatin1String("png") ? QStringLiteral("image/png")
+                                                  : QStringLiteral("image/jpeg"));
+    part.setBodyDevice(file);
+    file->setParent(multipart);
+    multipart->append(part);
+
+    QString base = m_account->baseUrl();
+    while (base.endsWith(QLatin1Char('/')))
+        base.chop(1);
+
+    QNetworkRequest request(QUrl(base + QStringLiteral("/api/desktop/v1/media")));
+    request.setRawHeader("Authorization",
+                         QByteArrayLiteral("Bearer ") + m_account->accessToken().toUtf8());
+    QNetworkReply *reply = m_network->post(request, multipart);
+    multipart->setParent(reply);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, requestId] {
+        const QByteArray raw = reply->readAll();
+        const QJsonObject json = QJsonDocument::fromJson(raw).object();
+        const bool ok = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        if (!ok) {
+            emit mediaUploadFailed(
+                requestId, json.value(QStringLiteral("error"))
+                               .toString(QStringLiteral("Media upload failed.")));
+            return;
+        }
+        emit mediaUploaded(requestId, json.value(QStringLiteral("signed_id")).toString());
+    });
+}
+
+void WriteroProvider::fetchResultMedia(const QString &operationId, qint64 jobId)
+{
+    QString base = m_account ? m_account->baseUrl() : QString();
+    while (base.endsWith(QLatin1Char('/')))
+        base.chop(1);
+
+    QNetworkRequest request(
+        QUrl(QStringLiteral("%1/api/desktop/v1/ai_jobs/%2/media").arg(base).arg(jobId)));
+    if (m_account && !m_account->accessToken().isEmpty()) {
+        request.setRawHeader("Authorization",
+                             QByteArrayLiteral("Bearer ") + m_account->accessToken().toUtf8());
+    }
+    QNetworkReply *reply = m_network->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, operationId] {
+        const QByteArray data = reply->readAll();
+        const QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
+        const bool ok = reply->error() == QNetworkReply::NoError && !data.isEmpty();
+        reply->deleteLater();
+        if (!ok) {
+            emit failed(operationId, QStringLiteral("Could not download the generated image."));
+            return;
+        }
+        emit imageFinished(operationId, data,
+                           contentType.isEmpty() ? QStringLiteral("image/png") : contentType);
     });
 }
 

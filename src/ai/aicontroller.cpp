@@ -118,6 +118,54 @@ void AiController::setAccount(AccountSession *account)
                     }
                     operationFinished();
                 });
+        connect(m_hosted, &WriteroProvider::imageFinished, this,
+                [this](const QString &operationId, const QByteArray &data,
+                       const QString &contentType) {
+                    const QString resultId = m_hostedResultIds.take(operationId);
+                    if (resultId.isEmpty()) {
+                        operationFinished();
+                        return;
+                    }
+                    const QString sha = m_workspace->media()->importData(
+                        data, QStringLiteral("hosted-image.png"), contentType);
+                    const qint64 mediaId = m_workspace->store()->ensureMedia(
+                        sha, QStringLiteral("hosted-image.png"), contentType, data.size());
+                    if (mediaId <= 0) {
+                        settleResult(resultId, QStringLiteral("failed"), {},
+                                     QStringLiteral("Could not store the generated image."));
+                    } else {
+                        settleResult(resultId, QStringLiteral("completed"),
+                                     QString::number(mediaId), {});
+                    }
+                    operationFinished();
+                    if (m_account)
+                        m_account->refreshCapabilities();
+                });
+        connect(m_hosted, &WriteroProvider::mediaUploaded, this,
+                [this](const QString &requestId, const QString &signedId) {
+                    const HostedUpload upload = m_hostedUploads.take(requestId);
+                    if (upload.operationId.isEmpty())
+                        return;
+                    HostedContext context;
+                    context.content = QString();
+                    context.blockType = QStringLiteral("media");
+                    context.articleTitle = m_document->session().document().title;
+                    if (upload.reference) {
+                        m_hosted->submit(upload.operationId, upload.kind, upload.model,
+                                         upload.prompt, context, signedId, {});
+                    } else {
+                        m_hosted->submit(upload.operationId, upload.kind, upload.model,
+                                         upload.prompt, context, {}, signedId);
+                    }
+                });
+        connect(m_hosted, &WriteroProvider::mediaUploadFailed, this,
+                [this](const QString &requestId, const QString &error) {
+                    const HostedUpload upload = m_hostedUploads.take(requestId);
+                    const QString resultId = m_hostedResultIds.take(upload.operationId);
+                    if (!resultId.isEmpty())
+                        settleResult(resultId, QStringLiteral("failed"), {}, error);
+                    operationFinished();
+                });
     }
     emit changed();
 }
@@ -182,19 +230,77 @@ QString AiController::runHostedRewrite(int index, const QString &blockId,
     return firstId;
 }
 
-QString AiController::hostedUnsupported(int index, const QString &kind, const QString &providerId,
-                                        const QString &model, const QString &prompt)
+QString AiController::runHostedImage(int index, const QString &kind, const QString &providerId,
+                                     const QString &model, const QString &prompt,
+                                     bool useCurrentAsReference)
 {
-    Q_UNUSED(index);
-    const QString blockId = m_currentBlock >= 0 && m_currentBlock < m_document->blocks()->rowCount()
-        ? m_document->blocks()->get(m_currentBlock).value(QStringLiteral("blockId")).toString()
-        : QString();
+    if (!m_account || !m_account->isConnected() || !m_account->hostedAiEnabled()) {
+        emit notice(QStringLiteral("Connect a Writero account with hosted AI enabled, "
+                                   "or use a personal provider or local model."));
+        return {};
+    }
+    if (!m_hosted || index < 0 || index >= m_document->blocks()->rowCount())
+        return {};
+
+    const Block *block = blockById(
+        m_document->blocks()->get(index).value(QStringLiteral("blockId")).toString());
+    if (!block)
+        return {};
+
+    if (kind == QLatin1String("image_explanation") && block->mediaId <= 0) {
+        emit notice(QStringLiteral("Image explanation needs an attached image."));
+        return {};
+    }
+
+    const QString operationId = newId();
     const WorkspaceStore::AiResultRecord record = createResult(
-        blockId, kind, providerId, model, prompt);
-    settleResult(record.id, QStringLiteral("failed"), {},
-                 QStringLiteral("Hosted image tools are not available yet. Choose a personal "
-                                "provider or a local model."));
+        block->id, kind, providerId, model, prompt, {}, operationId);
+    WorkspaceStore::AiResultRecord processing = record;
+    processing.status = QStringLiteral("processing");
+    m_workspace->store()->saveAiResult(processing);
+    m_hostedResultIds.insert(operationId, record.id);
+    refreshResults();
+    operationStarted();
+
+    const qint64 localMediaId =
+        (useCurrentAsReference || kind == QLatin1String("image_explanation")) ? block->mediaId : 0;
+    submitHostedImage(operationId, kind, model, prompt, localMediaId);
     return record.id;
+}
+
+void AiController::submitHostedImage(const QString &operationId, const QString &kind,
+                                     const QString &model, const QString &prompt,
+                                     qint64 localMediaId)
+{
+    HostedContext context;
+    context.content = QString();
+    context.blockType = QStringLiteral("media");
+    context.articleTitle = m_document->session().document().title;
+
+    if (localMediaId > 0) {
+        const QString path = m_workspace->mediaPath(localMediaId);
+        if (path.isEmpty()) {
+            const QString resultId = m_hostedResultIds.take(operationId);
+            if (!resultId.isEmpty()) {
+                settleResult(resultId, QStringLiteral("failed"), {},
+                             QStringLiteral("The image could not be read."));
+            }
+            operationFinished();
+            return;
+        }
+        const QString uploadId = newId();
+        HostedUpload upload;
+        upload.operationId = operationId;
+        upload.kind = kind;
+        upload.model = model;
+        upload.prompt = prompt;
+        upload.reference = kind == QLatin1String("image_generation");
+        m_hostedUploads.insert(uploadId, upload);
+        m_hosted->uploadMedia(uploadId, path);
+        return;
+    }
+
+    m_hosted->submit(operationId, kind, model, prompt, context);
 }
 
 void AiController::setCurrentBlock(int index)
@@ -376,9 +482,10 @@ QString AiController::runImageGeneration(int index, const QString &providerId, c
     if (index < 0 || index >= m_document->blocks()->rowCount())
         return {};
 
-    if (WriteroProvider::isHostedProviderId(providerId))
-        return hostedUnsupported(index, QStringLiteral("image_generation"), providerId, model,
-                                 prompt);
+    if (WriteroProvider::isHostedProviderId(providerId)) {
+        return runHostedImage(index, QStringLiteral("image_generation"), providerId, model,
+                              prompt, useCurrentAsReference);
+    }
 
     const Block *block = blockById(
         m_document->blocks()->get(index).value(QStringLiteral("blockId")).toString());
@@ -436,9 +543,10 @@ QString AiController::runImageExplanation(int index, const QString &providerId,
     if (index < 0 || index >= m_document->blocks()->rowCount())
         return {};
 
-    if (WriteroProvider::isHostedProviderId(providerId))
-        return hostedUnsupported(index, QStringLiteral("image_explanation"), providerId, model,
-                                 prompt);
+    if (WriteroProvider::isHostedProviderId(providerId)) {
+        return runHostedImage(index, QStringLiteral("image_explanation"), providerId, model,
+                              prompt, true);
+    }
 
     const QString blockId =
         m_document->blocks()->get(index).value(QStringLiteral("blockId")).toString();

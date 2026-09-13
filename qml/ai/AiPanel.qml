@@ -49,16 +49,17 @@ Drawer {
             return
         }
         if (aiPanel.providerId === "writero") {
-            const hosted = aiPanel.ai.account.hostedModels
+            const hosted = aiPanel.operation === "generate"
+                ? aiPanel.ai.account.hostedImageModels
+                : aiPanel.operation === "explain"
+                  ? aiPanel.ai.account.hostedExplanationModels
+                  : aiPanel.ai.account.hostedModels
             availableModels = []
             for (let i = 0; i < hosted.length; ++i)
                 availableModels.push({ id: hosted[i], name: hosted[i] })
             modelBox.currentIndex = availableModels.length > 0 ? 0 : -1
-            if (operation !== "text")
-                capabilityMessage = qsTr("Hosted image tools are not available yet. "
-                                         + "Choose a personal provider or a local model.")
-            else if (availableModels.length === 0)
-                capabilityMessage = qsTr("Hosted AI is not enabled for this account.")
+            if (availableModels.length === 0)
+                capabilityMessage = qsTr("No hosted models are available for this operation.")
             referenceCheck.checked = false
             return
         }
@@ -112,6 +113,8 @@ Drawer {
     function canRun() {
         if (!ai || ai.busy || providerId === "" || selectedModels() === "")
             return false
+        if (providerId === "writero")
+            return true
         if (operationIndex === 1)
             return providers.modelSupportsImageGeneration(providerId, selectedModel())
         if (operationIndex === 2)
@@ -272,10 +275,12 @@ Drawer {
 
         CheckBox {
             id: referenceCheck
-            visible: aiPanel.operationIndex === 1 && aiPanel.providerId !== "writero"
-            enabled: aiPanel.availableModels.length > 0 && modelBox.currentIndex >= 0
-                     && aiPanel.providers.modelSupportsReference(aiPanel.providerId,
-                                                                 aiPanel.selectedModel())
+            visible: aiPanel.operationIndex === 1
+            enabled: aiPanel.providerId === "writero"
+                     ? modelBox.currentIndex >= 0
+                     : aiPanel.availableModels.length > 0 && modelBox.currentIndex >= 0
+                       && aiPanel.providers.modelSupportsReference(aiPanel.providerId,
+                                                                   aiPanel.selectedModel())
             text: qsTr("Use current image as reference")
             ToolTip.visible: hovered && !enabled
             ToolTip.text: aiPanel.availableModels.length === 0
