@@ -268,6 +268,18 @@ void AccountSession::exchangeCode(const QString &code, const QString &codeVerifi
     });
 }
 
+bool AccountSession::importToken(const QString &baseUrl, const QString &token)
+{
+    if (token.isEmpty())
+        return false;
+    setBaseUrl(baseUrl);
+    storeToken(token);
+    setBusy(true);
+    setError({});
+    fetchCapabilities();
+    return true;
+}
+
 void AccountSession::restoreSession()
 {
     if (storedToken().isEmpty()) {
@@ -371,6 +383,11 @@ void AccountSession::storeToken(const QString &token)
 QString AccountSession::storedToken() const
 {
     return m_credentials.load(QString::fromLatin1(TokenKey));
+}
+
+QString AccountSession::accessToken() const
+{
+    return storedToken();
 }
 
 void AccountSession::clearLocalSession()

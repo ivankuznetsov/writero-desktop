@@ -46,6 +46,18 @@ ApplicationWindow {
         document: document
     }
 
+    SyncEngine {
+        id: sync
+        workspace: workspace
+        account: account
+        document: document
+    }
+
+    ConflictPanel {
+        id: conflictPanel
+        engine: sync
+    }
+
     AccountSession {
         id: account
         Component.onCompleted: restoreSession()
@@ -166,6 +178,59 @@ ApplicationWindow {
 
             Item {
                 Layout.fillWidth: true
+            }
+
+            ToolButton {
+                text: sync.conflictCount > 0
+                      ? "\u26A0 " + sync.conflictCount
+                      : sync.state === "synced" ? "\u2601\u2713"
+                      : sync.state === "syncing" ? "\u2601\u2026"
+                      : sync.state === "offline" ? "\u2601\u26A1"
+                      : "\u2601"
+                display: AbstractButton.TextOnly
+                ToolTip.text: {
+                    switch (sync.state) {
+                    case "synced": return qsTr("Synced")
+                    case "syncing": return qsTr("Syncing\u2026")
+                    case "conflict": return qsTr("Sync conflicts need review")
+                    case "offline": return qsTr("Offline; changes are queued locally")
+                    case "paused": return qsTr("Sync paused")
+                    case "error": return sync.lastError
+                    default: return qsTr("Writero cloud")
+                    }
+                }
+                ToolTip.visible: hovered
+                onClicked: syncMenu.popup()
+
+                Menu {
+                    id: syncMenu
+
+                    MenuItem {
+                        text: qsTr("Connect this document")
+                        visible: sync.state === "local" || sync.state === "paused"
+                        onTriggered: sync.connectDocument()
+                    }
+                    MenuItem {
+                        text: sync.pendingCount > 0
+                              ? qsTr("Sync now (%1 pending)").arg(sync.pendingCount)
+                              : qsTr("Sync now")
+                        enabled: !sync.busy && sync.cloudId !== ""
+                        onTriggered: sync.syncNow()
+                    }
+                    MenuItem {
+                        text: qsTr("Review conflicts (%1)").arg(sync.conflictCount)
+                        visible: sync.conflictCount > 0
+                        onTriggered: conflictPanel.open()
+                    }
+                    MenuSeparator {
+                        visible: sync.cloudId !== ""
+                    }
+                    MenuItem {
+                        text: qsTr("Pause syncing")
+                        visible: sync.cloudId !== "" && sync.state !== "paused"
+                        onTriggered: sync.disconnectDocument()
+                    }
+                }
             }
 
             ToolButton {
@@ -362,6 +427,21 @@ ApplicationWindow {
                 visible: document.saveError !== ""
                 text: document.saveError
                 color: Theme.danger
+            }
+
+            Label {
+                visible: sync.state !== "local"
+                text: {
+                    switch (sync.state) {
+                    case "synced": return qsTr("Cloud: synced")
+                    case "syncing": return qsTr("Cloud: syncing\u2026")
+                    case "conflict": return qsTr("Cloud: %1 conflicts").arg(sync.conflictCount)
+                    case "offline": return qsTr("Cloud: offline (%1 queued)").arg(sync.pendingCount)
+                    case "paused": return qsTr("Cloud: paused")
+                    default: return qsTr("Cloud: %1").arg(sync.state)
+                    }
+                }
+                color: sync.conflictCount > 0 ? Theme.danger : Theme.textMuted
             }
 
             Label {

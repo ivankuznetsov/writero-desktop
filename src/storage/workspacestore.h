@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDateTime>
+#include <QJsonObject>
 #include <QSqlDatabase>
 #include <QString>
 #include <QVector>
@@ -22,6 +23,30 @@ struct DocumentSummary
     bool trashed = false;
     int revision = 0;
     int wordCount = 0;
+};
+
+/// A local mutation waiting to be pushed to the cloud.
+struct PendingOperation
+{
+    QString operationId;
+    QString kind;
+    QJsonObject payload;
+    QDateTime createdAt;
+};
+
+/// A retained local/remote divergence that needs an explicit resolution.
+struct SyncConflict
+{
+    QString id;
+    QString documentId;
+    QString blockId;
+    QString kind;
+    QString baseContent;
+    QString localContent;
+    QString remoteContent;
+    qint64 remoteSequence = 0;
+    int remoteLockVersion = 0;
+    QDateTime createdAt;
 };
 
 /// SQLite workspace database.
@@ -47,9 +72,10 @@ public:
     /// `saveDocument` to persist blocks.
     bool createDocument(const Document &document, QString *error = nullptr);
 
-    /// Saves document metadata, all blocks, and the given changes in one
-    /// transaction. Changes are journaled as revisions.
+    /// Saves document metadata, all blocks, the given changes, and any
+    /// pending cloud operations in one transaction.
     bool saveDocument(const Document &document, const QVector<DocumentChange> &changes,
+                      const QVector<PendingOperation> &pendingOperations = {},
                       QString *error = nullptr);
 
     Document loadDocument(const QString &documentId, QString *error = nullptr);
@@ -88,6 +114,23 @@ public:
                                       int limit = 50);
     bool updateAiResult(const QString &resultId, const QString &status,
                         const QString &content = QString(), const QString &error = QString());
+
+    // --- Cloud sync bookkeeping ---
+
+    QVector<PendingOperation> pendingOperations(const QString &documentId);
+    bool deletePendingOperation(const QString &documentId, const QString &operationId);
+    bool updateDocumentSync(const QString &documentId, const QString &cloudId,
+                            const QString &cloudState, qint64 syncCursor, qint64 feedGeneration);
+    bool mapBlock(const QString &documentId, const QString &localId, const QString &remoteId);
+    QString remoteIdForLocal(const QString &documentId, const QString &localId) const;
+    int remoteVersionForLocal(const QString &documentId, const QString &localId) const;
+    bool setRemoteVersion(const QString &documentId, const QString &localId, int remoteVersion);
+    QString localIdForRemote(const QString &documentId, const QString &remoteId) const;
+    bool clearBlockMap(const QString &documentId);
+    bool saveConflict(const SyncConflict &conflict);
+    QVector<SyncConflict> conflicts(const QString &documentId);
+    int conflictCount(const QString &documentId);
+    bool resolveConflict(const QString &conflictId);
 
     struct MediaRecord
     {

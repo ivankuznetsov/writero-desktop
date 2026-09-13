@@ -26,6 +26,8 @@ ctest --test-dir build --output-on-failure
 | `tst_aicontroller` | End-to-end rewrite/bulk flows with a stub provider and persisted results |
 | `tst_providerregistry` | Profile persistence without secrets, keyring fallback |
 | `tst_documentcontroller` | Editor gestures: list Enter, indent, formatting, metadata |
+| `tst_reconciliation` | Remote change application, conflict retention, snapshot merge |
+| `tst_sync` | Connect/push/pull against a stub desktop API, replay, lock conflicts |
 | `tst_ui` | Qt Quick editor interactions on the live delegate (click, typing path, split, Tab, slash menu) |
 
 QML lint is part of CI:

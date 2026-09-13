@@ -87,6 +87,12 @@ add_library(writero_ui STATIC
     src/ai/providerregistry.cpp
     src/cloud/accountsession.h
     src/cloud/accountsession.cpp
+    src/cloud/changereconciler.h
+    src/cloud/changereconciler.cpp
+    src/cloud/cloudclient.h
+    src/cloud/cloudclient.cpp
+    src/cloud/syncengine.h
+    src/cloud/syncengine.cpp
     src/editor/blocklistmodel.h
     src/editor/blocklistmodel.cpp
     src/editor/documentcontroller.h
@@ -115,6 +121,7 @@ qt_add_qml_module(writero_ui
         src/ai/aicontroller.h
         src/ai/providerregistry.h
         src/cloud/accountsession.h
+        src/cloud/syncengine.h
         src/editor/blocklistmodel.h
         src/editor/documentcontroller.h
         src/editor/documentlibrarymodel.h
@@ -129,6 +136,7 @@ qt_add_qml_module(writero_ui
         qml/library/DocumentSidebar.qml
         qml/settings/Account.qml
         qml/settings/Providers.qml
+        qml/sync/ConflictPanel.qml
 )
 
 qt_add_executable(writero-desktop

@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QQmlEngine>
+#include <QJsonObject>
 #include <QTimer>
 #include <QVariantMap>
 
@@ -130,6 +131,7 @@ private:
     void scheduleAutosave();
     void setSaveError(const QString &error);
     void ensureTrailingBlock();
+    QVector<PendingOperation> pendingOperationsFor(const QVector<DocumentChange> &changes) const;
 
     DocumentSession m_session;
     BlockListModel m_blocks;

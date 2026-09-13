@@ -72,6 +72,14 @@ public:
 
     Q_INVOKABLE void refreshCapabilities();
 
+    /// Bearer token for desktop API calls (empty when not signed in).
+    Q_INVOKABLE QString accessToken() const;
+
+    /// Imports an existing desktop-scoped token (for example from an
+    /// environment variable or a test harness) and validates it against the
+    /// server. Returns true when the server accepts it.
+    Q_INVOKABLE bool importToken(const QString &baseUrl, const QString &token);
+
     /// Completes the flow from the loopback callback. Returns false when the
     /// state does not match the pending sign-in.
     Q_INVOKABLE bool completeAuthorization(const QString &code, const QString &state);

@@ -27,14 +27,15 @@ Implemented so far:
   as synced articles, so they are not local operations)
 - [x] U8 — Service OAuth and capability API (desktop sign-in, desktop-scoped
   tokens, `/api/desktop/v1/capabilities`)
-- [ ] U9–U12 — Structured sync, conflicts, hosted credits, and cloud parity
-  (service-side work in the Writero Rails repository)
+- [x] U9 — Structured server snapshots, mutations, media, and change log
+- [x] U10 — Native cloud sync and conflict resolution (connect, push with
+  idempotent replay, pull, conflict review; editorial-result application and
+  the native remote-history browser remain)
+- [ ] U11–U12 — Hosted AI credits and full cloud parity (service-side work)
 - [x] U13 — Open-source packaging and Omarchy acceptance artifacts
 
-The remaining work is the cloud phase described in the plan: the structured
-`/api/desktop/v1` document/change/media endpoints, the desktop sync engine
-with conflict resolution, and hosted AI credits. U8 already provides the
-account connection and capability discovery those units build on.
+The remaining work is hosted AI credits and full cloud parity (U11–U12),
+plus the U10 follow-ups noted above.
 
 ## Building
 

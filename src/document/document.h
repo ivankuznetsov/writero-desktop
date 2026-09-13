@@ -24,6 +24,9 @@ public:
     /// Present once the document is connected to a Writero cloud article.
     QString cloudId;
     QString cloudState = QStringLiteral("local");
+    qint64 syncCursor = 0;
+    qint64 feedGeneration = 0;
+    qint64 syncTitleVersion = 0;
 
     int indexOf(const QString &blockId) const;
     const Block *blockById(const QString &blockId) const;

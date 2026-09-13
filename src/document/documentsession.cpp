@@ -29,6 +29,18 @@ void DocumentSession::load(const Document &document)
     emit historyChanged();
 }
 
+void DocumentSession::setCloudState(const QString &cloudId, const QString &cloudState,
+                                    qint64 syncCursor, qint64 feedGeneration,
+                                    qint64 titleVersion)
+{
+    m_document.cloudId = cloudId;
+    m_document.cloudState = cloudState;
+    m_document.syncCursor = syncCursor;
+    m_document.feedGeneration = feedGeneration;
+    m_document.syncTitleVersion = titleVersion;
+    emit syncStateChanged();
+}
+
 void DocumentSession::markClean()
 {
     setDirty(false);
@@ -266,6 +278,64 @@ bool DocumentSession::replaceAll(const BlockList &blocks, const QString &source)
     applyReplaceAll(blocks);
     pushChange(change, false);
     return true;
+}
+
+void DocumentSession::applyRemoteTitle(const QString &title)
+{
+    m_loading = true;
+    applyTitle(title);
+    m_loading = false;
+}
+
+void DocumentSession::applyRemoteUpdate(const QString &blockId, const Block &block)
+{
+    const int index = m_document.indexOf(blockId);
+    if (index < 0)
+        return;
+    Block updated = block;
+    updated.id = blockId;
+    updated.revision = m_document.blocks.at(index).revision + 1;
+    m_loading = true;
+    applyUpdate(index, updated);
+    m_loading = false;
+}
+
+void DocumentSession::applyRemoteInsert(const Block &block, int index)
+{
+    m_loading = true;
+    applyInsert(qBound(0, index, m_document.blocks.size()), block);
+    m_loading = false;
+}
+
+void DocumentSession::applyRemoteRemove(const QString &blockId)
+{
+    const int index = m_document.indexOf(blockId);
+    if (index < 0)
+        return;
+    m_loading = true;
+    applyRemove(index);
+    m_loading = false;
+}
+
+void DocumentSession::applyRemoteMove(const QString &blockId, int toIndex)
+{
+    const int index = m_document.indexOf(blockId);
+    if (index < 0 || index == toIndex || toIndex < 0 || toIndex >= m_document.blocks.size())
+        return;
+    m_loading = true;
+    applyMove(index, toIndex);
+    m_loading = false;
+}
+
+void DocumentSession::applyRemoteReset(const BlockList &blocks, const QString &title,
+                                       const QString &titleVersionSource)
+{
+    Q_UNUSED(titleVersionSource);
+    m_loading = true;
+    if (m_document.title != title)
+        applyTitle(title);
+    applyReplaceAll(blocks);
+    m_loading = false;
 }
 
 bool DocumentSession::undo()

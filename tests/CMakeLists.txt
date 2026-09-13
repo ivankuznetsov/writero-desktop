@@ -25,6 +25,20 @@ set_tests_properties(tst_aicontroller PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_RUNTIME_DIR=${CMAKE_BINARY_DIR}/runtime"
 )
 
+add_executable(tst_sync cloud/tst_sync.cpp)
+target_link_libraries(tst_sync PRIVATE writero_ui writero_uiplugin Qt6::Test)
+add_test(NAME tst_sync COMMAND tst_sync)
+set_tests_properties(tst_sync PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_RUNTIME_DIR=${CMAKE_BINARY_DIR}/runtime"
+)
+
+add_executable(tst_reconciliation cloud/tst_reconciliation.cpp)
+target_link_libraries(tst_reconciliation PRIVATE writero_ui writero_uiplugin Qt6::Test)
+add_test(NAME tst_reconciliation COMMAND tst_reconciliation)
+set_tests_properties(tst_reconciliation PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_RUNTIME_DIR=${CMAKE_BINARY_DIR}/runtime"
+)
+
 add_executable(tst_accountsession cloud/tst_accountsession.cpp)
 target_link_libraries(tst_accountsession PRIVATE writero_ui writero_uiplugin Qt6::Test)
 add_test(NAME tst_accountsession COMMAND tst_accountsession)

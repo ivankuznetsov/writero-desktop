@@ -24,6 +24,10 @@ public:
 
     void load(const Document &document);
     const Document &document() const { return m_document; }
+
+    /// Updates cloud connection state without recording undo/history.
+    void setCloudState(const QString &cloudId, const QString &cloudState, qint64 syncCursor,
+                       qint64 feedGeneration, qint64 titleVersion);
     QString id() const { return m_document.id; }
 
     bool isDirty() const { return m_dirty; }
@@ -63,6 +67,16 @@ public:
     bool undo();
     bool redo();
 
+    // --- Remote application (no journal, undo, or dirty marking) ---
+
+    void applyRemoteTitle(const QString &title);
+    void applyRemoteUpdate(const QString &blockId, const Block &block);
+    void applyRemoteInsert(const Block &block, int index);
+    void applyRemoteRemove(const QString &blockId);
+    void applyRemoteMove(const QString &blockId, int toIndex);
+    void applyRemoteReset(const BlockList &blocks, const QString &title,
+                          const QString &titleVersionSource);
+
 signals:
     void aboutToReset();
     void reset();
@@ -78,6 +92,7 @@ signals:
 
     void dirtyChanged(bool dirty);
     void historyChanged();
+    void syncStateChanged();
 
 private:
     static constexpr qint64 CoalesceWindowMs = 2500;

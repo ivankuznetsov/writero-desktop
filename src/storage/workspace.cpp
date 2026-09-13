@@ -110,7 +110,7 @@ QString Workspace::createDocument(const QString &title)
         setError(error);
         return {};
     }
-    if (!m_store.saveDocument(document, {}, &error)) {
+    if (!m_store.saveDocument(document, {}, {}, &error)) {
         setError(error);
         return {};
     }
@@ -291,7 +291,7 @@ QString Workspace::importBundleFrom(const QString &directory, QString *error)
             block.mediaId = 0;
     }
 
-    if (!m_store.saveDocument(document, {}, error))
+    if (!m_store.saveDocument(document, {}, {}, error))
         return {};
     for (const Revision &revision : contents.revisions) {
         Revision remapped = revision;

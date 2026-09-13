@@ -107,8 +107,9 @@ bool DocumentController::saveNow()
         return true;
 
     const QVector<DocumentChange> changes = m_session.journal();
+    const QVector<PendingOperation> pending = pendingOperationsFor(changes);
     QString error;
-    if (!m_workspace->store()->saveDocument(m_session.document(), changes, &error)) {
+    if (!m_workspace->store()->saveDocument(m_session.document(), changes, pending, &error)) {
         setSaveError(error);
         return false;
     }
@@ -127,6 +128,97 @@ bool DocumentController::saveNow()
     emit saveErrorChanged();
     emit saved();
     return true;
+}
+
+/// Maps journaled document changes to durable cloud operations. Operation
+/// ids are persisted with the save, so a crash between commit and
+/// acknowledgement replays the same operation instead of duplicating it.
+QVector<PendingOperation> DocumentController::pendingOperationsFor(
+    const QVector<DocumentChange> &changes) const
+{
+    const Document &document = m_session.document();
+    if (document.cloudId.isEmpty() || document.cloudState == QLatin1String("local")
+        || document.cloudState == QLatin1String("conflict")) {
+        return {};
+    }
+
+    const BlockList &blocks = document.blocks;
+    const auto blockBefore = [this, &blocks](const QString &blockId) -> QString {
+        const int index = m_session.document().indexOf(blockId);
+        if (index <= 0)
+            return {};
+        return blocks.at(index - 1).id;
+    };
+    const auto enqueuePending = [](QVector<PendingOperation> &operations, const QString &kind,
+                                   const QJsonObject &payload) {
+        PendingOperation operation;
+        operation.operationId = newId();
+        operation.kind = kind;
+        operation.payload = payload;
+        operation.createdAt = QDateTime::currentDateTimeUtc();
+        operations.append(operation);
+    };
+    const auto blockAttributes = [](const Block &block) {
+        return QJsonObject{
+            {QStringLiteral("content"), block.content},
+            {QStringLiteral("block_type"), blocktype::toKey(block.type)},
+            {QStringLiteral("metadata"), QJsonObject::fromVariantMap(block.metadata)},
+        };
+    };
+
+    QVector<PendingOperation> operations;
+    for (const DocumentChange &change : changes) {
+        switch (change.kind) {
+        case DocumentChange::Kind::Title:
+            enqueuePending(operations, QStringLiteral("update_title"),
+                           QJsonObject{{QStringLiteral("title"), change.afterTitle}});
+            break;
+        case DocumentChange::Kind::InsertBlock:
+            enqueuePending(operations, QStringLiteral("create_block"),
+                           QJsonObject{
+                               {QStringLiteral("local_block_id"), change.afterBlock.id},
+                               {QStringLiteral("after_local_block_id"),
+                                blockBefore(change.afterBlock.id)},
+                               {QStringLiteral("attributes"), blockAttributes(change.afterBlock)},
+                           });
+            if (change.afterBlock.type == BlockType::Media && change.afterBlock.mediaId > 0) {
+                enqueuePending(operations, QStringLiteral("attach_media"),
+                               QJsonObject{{QStringLiteral("local_block_id"),
+                                            change.afterBlock.id}});
+            }
+            break;
+        case DocumentChange::Kind::RemoveBlock:
+            enqueuePending(operations, QStringLiteral("delete_block"),
+                           QJsonObject{{QStringLiteral("local_block_id"), change.beforeBlock.id}});
+            break;
+        case DocumentChange::Kind::UpdateBlock:
+            enqueuePending(operations, QStringLiteral("update_block"),
+                           QJsonObject{
+                               {QStringLiteral("local_block_id"), change.afterBlock.id},
+                               {QStringLiteral("attributes"), blockAttributes(change.afterBlock)},
+                           });
+            if (change.afterBlock.type == BlockType::Media && change.afterBlock.mediaId > 0
+                && change.beforeBlock.mediaId != change.afterBlock.mediaId) {
+                enqueuePending(operations, QStringLiteral("attach_media"),
+                               QJsonObject{{QStringLiteral("local_block_id"),
+                                            change.afterBlock.id}});
+            }
+            break;
+        case DocumentChange::Kind::MoveBlock:
+            enqueuePending(operations, QStringLiteral("move_block"),
+                           QJsonObject{
+                               {QStringLiteral("local_block_id"), change.blockId},
+                               {QStringLiteral("after_local_block_id"), blockBefore(change.blockId)},
+                           });
+            break;
+        case DocumentChange::Kind::ReplaceAll:
+            // Whole-document replacement during an active sync is not part of
+            // the first sync protocol; the document should be reconnected or
+            // the change applied through the browser.
+            break;
+        }
+    }
+    return operations;
 }
 
 bool DocumentController::saveIfDirty()
