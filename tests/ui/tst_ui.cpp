@@ -13,7 +13,7 @@ public:
         // real documents and the user's credential store.
         qputenv("XDG_DATA_HOME", m_data.path().toUtf8());
         qputenv("XDG_CONFIG_HOME", m_data.path().toUtf8());
-        qputenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent-writero-qa-bus");
+        qputenv("WRITERO_DISABLE_KEYRING", "1");
     }
     Q_INVOKABLE QString screenshotPath() const { return qEnvironmentVariable("WRITERO_QA_SCREENSHOT"); }
     Q_INVOKABLE QString workspacePath() const { return m_data.path() + "/conflicts"; }
