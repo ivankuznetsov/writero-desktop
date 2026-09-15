@@ -3,6 +3,8 @@
 #include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 
 #include "editor/documentcontroller.h"
 #include "editor/documentlibrarymodel.h"
@@ -160,6 +162,107 @@ private slots:
         QVERIFY(!workspace.mediaPath(mediaBlock.value(QStringLiteral("mediaId")).toLongLong())
                      .isEmpty());
         QCOMPARE(workspace.documents()->rowCount(), 2);
+    }
+
+    void bundleImportHistoryIsAtomicAndOrdered()
+    {
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+        const QString id = workspace.createDocument(QStringLiteral("History"));
+        const auto document = workspace.store()->loadDocument(id);
+        Revision revision;
+        revision.blockId = document.blocks.first().id;
+        revision.createdAt = QDateTime::fromString(QStringLiteral("2026-09-15T12:00:00.000Z"), Qt::ISODateWithMs);
+        revision.content = QStringLiteral("first");
+        QVERIFY(workspace.importRevision(id, revision));
+        revision.content = QStringLiteral("second");
+        QVERIFY(workspace.importRevision(id, revision));
+        const QString bundle = dir.filePath(QStringLiteral("bundle"));
+        QVERIFY(!workspace.exportBundleTo(bundle, id).isEmpty());
+
+        const QString imported = workspace.importBundleFrom(bundle);
+        QVERIFY(!imported.isEmpty());
+        const auto history = workspace.store()->revisions(imported);
+        QCOMPARE(history.size(), 2);
+        QCOMPARE(history.first().content, QStringLiteral("second"));
+        QCOMPARE(history.last().content, QStringLiteral("first"));
+    }
+
+    void bundleImportRollsBackOnHistoryWriteFailure()
+    {
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+        const QString id = workspace.createDocument(QStringLiteral("History"));
+        Revision revision;
+        revision.blockId = workspace.store()->loadDocument(id).blocks.first().id;
+        revision.content = QStringLiteral("history");
+        QVERIFY(workspace.importRevision(id, revision));
+        const QString bundle = dir.filePath(QStringLiteral("bundle"));
+        QVERIFY(!workspace.exportBundleTo(bundle, id).isEmpty());
+        {
+            auto db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("qa06-fault"));
+            db.setDatabaseName(dir.filePath(QStringLiteral("workspace.db")));
+            QVERIFY(db.open());
+            QSqlQuery query(db);
+            QVERIFY(query.exec(QStringLiteral("CREATE TRIGGER qa06_fail_history BEFORE INSERT ON revisions BEGIN SELECT RAISE(ABORT, 'qa06 history fault'); END")));
+            QString error;
+            QVERIFY(workspace.importBundleFrom(bundle, &error).isEmpty());
+            QVERIFY(error.contains(QStringLiteral("qa06 history fault")));
+            QCOMPARE(workspace.store()->listDocuments().size(), 1);
+            QCOMPARE(workspace.documents()->rowCount(), 1);
+            QVERIFY(query.exec(QStringLiteral("DROP TRIGGER qa06_fail_history")));
+            QVERIFY(!workspace.importBundleFrom(bundle).isEmpty());
+            QCOMPARE(workspace.store()->listDocuments().size(), 2);
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("qa06-fault"));
+    }
+
+    void bundleImportFailsWhenMediaCannotBeStored()
+    {
+        QTemporaryDir sourceDir;
+        Workspace source;
+        QVERIFY(source.open(sourceDir.path()));
+        const QString id = source.createDocument("Media");
+        const QString imagePath = sourceDir.filePath("pixel.png");
+        QFile image(imagePath);
+        QVERIFY(image.open(QIODevice::WriteOnly));
+        image.write("image-bytes");
+        image.close();
+        Document document = source.store()->loadDocument(id);
+        document.blocks[0].mediaId = source.importMedia(imagePath);
+        QVERIFY(document.blocks[0].mediaId > 0);
+        QVERIFY(source.store()->saveDocument(document, {}));
+        const QString bundle = sourceDir.filePath("bundle");
+        QVERIFY(!source.exportBundleTo(bundle, id).isEmpty());
+
+        QTemporaryDir targetDir;
+        Workspace target;
+        QVERIFY(target.open(targetDir.path()));
+        QVERIFY(QDir(targetDir.filePath("media/.staging")).removeRecursively());
+        QFile blocker(targetDir.filePath("media/.staging"));
+        QVERIFY(blocker.open(QIODevice::WriteOnly));
+        blocker.close();
+        QString error;
+        QVERIFY(target.importBundleFrom(bundle, &error).isEmpty());
+        QVERIFY(!error.isEmpty());
+        QVERIFY(target.store()->listDocuments().isEmpty());
+    }
+
+    void bundleExportFailsWhenAttachedBlobIsMissing()
+    {
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+        const QString id = workspace.createDocument("Missing media");
+        Document document = workspace.store()->loadDocument(id);
+        document.blocks[0].mediaId = workspace.store()->ensureMedia(
+            QString(64, 'a'), "missing.png", "image/png", 10);
+        QVERIFY(workspace.store()->saveDocument(document, {}));
+        QString error;
+        QVERIFY(workspace.exportBundleTo(dir.filePath("bundle"), id, &error).isEmpty());
+        QVERIFY(!error.isEmpty());
     }
 
     void markdownImportReplacesBlocks()

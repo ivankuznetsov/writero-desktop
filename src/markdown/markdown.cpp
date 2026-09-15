@@ -28,7 +28,7 @@ const QRegularExpression &olPattern()
 
 const QRegularExpression &codeFencePattern()
 {
-    static const QRegularExpression pattern(QStringLiteral("^[ \\t]*```([^\\s`]*)[ \\t]*$"));
+    static const QRegularExpression pattern(QStringLiteral("^[ \\t]*(`{3,}|~{3,})([^\\s]*)[ \\t]*$"));
     return pattern;
 }
 
@@ -135,6 +135,12 @@ QString consumeList(const QStringList &lines, int startIndex, int *nextIndex)
     return content;
 }
 
+QString unescapeMarkdown(QString value)
+{
+    static const QRegularExpression escape(QStringLiteral(R"(\\([\\`*{}\[\]()#+\-.!_<>]))"));
+    return value.replace(escape, QStringLiteral("\\1"));
+}
+
 } // namespace
 
 BlockList parse(const QString &text)
@@ -151,6 +157,8 @@ BlockList parse(const QString &text)
     Block current;
     bool hasCurrent = false;
     bool inCode = false;
+    QString openingFence;
+    QStringList codeLines;
 
     const auto pushCurrent = [&]() {
         if (hasCurrent)
@@ -162,22 +170,40 @@ BlockList parse(const QString &text)
         const QString &line = lines.at(index);
         const auto fence = codeFencePattern().match(line);
 
-        if (fence.hasMatch()) {
-            if (inCode) {
+        if (inCode) {
+            if (fence.hasMatch() && fence.captured(1).front() == openingFence.front()
+                && fence.captured(1).size() >= openingFence.size()
+                && fence.captured(2).isEmpty()) {
+                current.content = codeLines.join(QLatin1Char('\n'));
                 pushCurrent();
                 inCode = false;
             } else {
-                pushCurrent();
-                inCode = true;
-                current = Block::create(BlockType::Code);
-                current.setLanguage(fence.captured(1));
-                hasCurrent = true;
+                codeLines.append(line);
             }
             continue;
         }
 
-        if (inCode && hasCurrent) {
-            current.content += (current.content.isEmpty() ? QString() : QStringLiteral("\n")) + line;
+        if (fence.hasMatch()) {
+            pushCurrent();
+            inCode = true;
+            openingFence = fence.captured(1);
+            codeLines.clear();
+            current = Block::create(BlockType::Code);
+            current.setLanguage(fence.captured(2));
+            hasCurrent = true;
+            continue;
+        }
+
+        static const QRegularExpression imagePattern(
+            QStringLiteral(R"(^!\[((?:\\.|[^\]\\])*)\]\((?:<([^>\n]*)>|((?:\\.|[^\s])*)?)\)[ \t]*$)"));
+        const auto image = imagePattern.match(line);
+        if (image.hasMatch()) {
+            pushCurrent();
+            Block block = Block::create(BlockType::Media);
+            block.setMediaAlt(unescapeMarkdown(image.captured(1)));
+            block.setMediaSource(unescapeMarkdown(image.captured(2).isNull()
+                                                     ? image.captured(3) : image.captured(2)));
+            blocks.append(block);
             continue;
         }
 
@@ -237,12 +263,16 @@ BlockList parse(const QString &text)
         }
     }
 
+    if (inCode)
+        current.content = codeLines.join(QLatin1Char('\n'));
     pushCurrent();
 
     BlockList result;
     for (Block &block : blocks) {
-        block.content = block.content.trimmed();
-        if (block.content.isEmpty() && block.type != BlockType::Divider)
+        if (block.type != BlockType::Code)
+            block.content = block.content.trimmed();
+        if (block.content.isEmpty() && block.type != BlockType::Divider
+            && block.type != BlockType::Code && block.type != BlockType::Media)
             continue;
         result.append(block);
     }
@@ -258,7 +288,7 @@ bool looksLikeMarkdown(const QString &text)
         QRegularExpression(QStringLiteral("^#{1,6}\\s+.+$"), QRegularExpression::MultilineOption),
         QRegularExpression(QStringLiteral("^[-*+]\\s+.+$"), QRegularExpression::MultilineOption),
         QRegularExpression(QStringLiteral("^\\d+\\.\\s+.+$"), QRegularExpression::MultilineOption),
-        QRegularExpression(QStringLiteral("^```"), QRegularExpression::MultilineOption),
+        QRegularExpression(QStringLiteral("^[ \\t]*(?:`{3,}|~{3,})"), QRegularExpression::MultilineOption),
         QRegularExpression(QStringLiteral("^>\\s+.+$"), QRegularExpression::MultilineOption),
         QRegularExpression(QStringLiteral("^(?:---+|\\*\\*\\*+|___+)$"),
                            QRegularExpression::MultilineOption),
@@ -284,9 +314,17 @@ QString serialize(const BlockList &blocks, const std::function<QString(const Blo
                     + block.content;
             break;
         }
-        case BlockType::Code:
-            parts << QStringLiteral("```%1\n%2\n```").arg(block.language(), block.content);
+        case BlockType::Code: {
+            int length = 3;
+            static const QRegularExpression runs(QStringLiteral("`+"));
+            auto matches = runs.globalMatch(block.content);
+            while (matches.hasNext())
+                length = qMax(length, int(matches.next().capturedLength()) + 1);
+            const QString fence(length, QLatin1Char('`'));
+            parts << fence + block.language() + QLatin1Char('\n') + block.content
+                + QLatin1Char('\n') + fence;
             break;
+        }
         case BlockType::Quote: {
             const QStringList lines = block.content.split(QLatin1Char('\n'));
             QStringList quoted;
@@ -306,8 +344,17 @@ QString serialize(const BlockList &blocks, const std::function<QString(const Blo
                 source = mediaSource(block);
             if (source.isEmpty())
                 break;
-            const QString alt = block.mediaAlt().isEmpty() ? QStringLiteral("image")
-                                                           : block.mediaAlt();
+            QString alt = block.mediaAlt().isEmpty() ? QStringLiteral("image")
+                                                     : block.mediaAlt();
+            alt.replace(QStringLiteral("\\"), QStringLiteral("\\\\"));
+            alt.replace(QStringLiteral("["), QStringLiteral("\\["));
+            alt.replace(QStringLiteral("]"), QStringLiteral("\\]"));
+            if (source.contains(QRegularExpression(QStringLiteral("[\\s()<>]")))) {
+                source.replace(QStringLiteral("\\"), QStringLiteral("\\\\"));
+                source.replace(QStringLiteral("<"), QStringLiteral("%3C"));
+                source.replace(QStringLiteral(">"), QStringLiteral("%3E"));
+                source = QLatin1Char('<') + source + QLatin1Char('>');
+            }
             parts << QStringLiteral("![%1](%2)").arg(alt, source);
             break;
         }

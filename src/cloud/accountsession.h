@@ -104,9 +104,11 @@ private:
     void handleCallbackRequest(QTcpSocket *socket, const QByteArray &request);
     void exchangeCode(const QString &code, const QString &codeVerifier);
     void fetchCapabilities();
-    void applyCapabilities(const QByteArray &body);
+    bool applyCapabilities(const QByteArray &body);
     void storeToken(const QString &token);
     QString storedToken() const;
+    QString tokenKey() const;
+    void resetSessionState();
     QString redirectUri() const;
     static QString makeVerifier();
     static QString challengeFor(const QString &verifier);
@@ -119,6 +121,7 @@ private:
     QString m_pendingState;
     QString m_pendingVerifier;
     QString m_pendingRedirectUri;
+    quint64 m_generation = 0;
     bool m_connected = false;
     bool m_busy = false;
     QString m_accountEmail;

@@ -26,11 +26,13 @@ ApplicationWindow {
 
     Workspace {
         id: workspace
+        objectName: "workspace"
         Component.onCompleted: openDefault()
     }
 
     DocumentController {
         id: document
+        objectName: "documentController"
         workspace: workspace
     }
 
@@ -135,8 +137,11 @@ ApplicationWindow {
         onActivated: document.redo()
     }
 
-    onClosing: {
-        document.saveIfDirty()
+    onClosing: (close) => {
+        if (!document.saveIfDirty()) {
+            close.accepted = false
+            return
+        }
         workspace.close()
     }
 

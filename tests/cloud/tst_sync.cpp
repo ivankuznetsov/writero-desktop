@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSharedPointer>
+#include <QSqlQuery>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -98,6 +99,7 @@ public:
     void setCursorExpired(bool expired) { m_cursorExpired = expired; }
     void failNextMediaUpload() { m_mediaUploadFailures = 1; }
     int snapshotCount = 0;
+    bool numericIds = false;
 
     void appendMediaChange(const QString &documentId, const QString &remoteBlockId)
     {
@@ -152,7 +154,7 @@ private:
     QJsonObject serialize(const ServerBlock &block) const
     {
         QJsonObject json{
-            {QStringLiteral("id"), block.id},
+            {QStringLiteral("id"), numericIds ? QJsonValue(block.id.toInt()) : QJsonValue(block.id)},
             {QStringLiteral("position"), block.position},
             {QStringLiteral("block_type"), block.type},
             {QStringLiteral("content"), block.content},
@@ -358,7 +360,7 @@ private:
             const QString kind = mutation.value(QStringLiteral("kind")).toString();
             if (kind == QLatin1String("create_block")) {
                 ServerBlock block;
-                block.id = QStringLiteral("r%1").arg(++m_remoteIds);
+                block.id = numericIds ? QString::number(++m_remoteIds) : QStringLiteral("r%1").arg(++m_remoteIds);
                 block.content = mutation.value(QStringLiteral("attributes"))
                                     .toObject()
                                     .value(QStringLiteral("content"))
@@ -579,6 +581,125 @@ private slots:
         QCOMPARE(cloud->blocks.first().content, QStringLiteral("local paragraph"));
     }
 
+    void unsavedEditDuringPullIsRetainedAsConflict_data()
+    {
+        QTest::addColumn<bool>("resnapshot");
+        QTest::newRow("feed") << false;
+        QTest::newRow("snapshot") << true;
+    }
+
+    void unsavedEditDuringPullIsRetainedAsConflict()
+    {
+        QFETCH(bool, resnapshot);
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY(fixture.account.isConnected());
+        fixture.engine.connectDocument();
+        QTRY_COMPARE(fixture.engine.state(), QStringLiteral("synced"));
+        auto *cloud = fixture.api.document(fixture.engine.cloudId());
+        cloud->blocks.first().content = QStringLiteral("browser edit");
+        cloud->blocks.first().lockVersion = 2;
+        fixture.api.setCursorExpired(resnapshot);
+        QJsonObject remote{{"id", cloud->blocks.first().id}, {"content", "browser edit"},
+                           {"block_type", "text"}, {"position", 1}, {"lock_version", 2}};
+        cloud->changes.append({++cloud->sequence, "block_update", {{"block", remote}}});
+        fixture.engine.syncNow();
+        fixture.document.setBlockContent(0, QStringLiteral("typing during network request"), false);
+        QTRY_VERIFY(!fixture.engine.busy());
+        QCOMPARE(fixture.document.session().document().blocks.first().content,
+                 QStringLiteral("typing during network request"));
+        QCOMPARE(fixture.engine.conflictCount(), 1);
+        QCOMPARE(cloud->blocks.first().content, QStringLiteral("browser edit"));
+    }
+
+    void failedSnapshotSaveDoesNotAdvanceDurableCursor()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY(fixture.account.isConnected());
+        fixture.engine.connectDocument();
+        QTRY_COMPARE(fixture.engine.state(), QStringLiteral("synced"));
+        const QString documentId = fixture.document.documentId();
+        const Document before = fixture.workspace.store()->loadDocument(documentId);
+        auto *cloud = fixture.api.document(fixture.engine.cloudId());
+        cloud->blocks.first().content = QStringLiteral("snapshot must survive reopen");
+        ++cloud->sequence;
+        fixture.api.setCursorExpired(true);
+
+        const QString connection = newId();
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+            db.setDatabaseName(fixture.dir.filePath(QStringLiteral("workspace.db")));
+            QVERIFY(db.open());
+            QSqlQuery query(db);
+            QVERIFY(query.exec(QStringLiteral("CREATE TRIGGER reject_snapshot BEFORE INSERT ON blocks "
+                                               "BEGIN SELECT RAISE(ABORT, 'injected disk failure'); END")));
+            fixture.engine.syncNow();
+            QTRY_VERIFY(!fixture.engine.busy());
+            const Document persisted = fixture.workspace.store()->loadDocument(documentId);
+            QCOMPARE(persisted.syncCursor, before.syncCursor);
+            QCOMPARE(persisted.blocks.first().content, before.blocks.first().content);
+            QCOMPARE(fixture.engine.state(), QStringLiteral("error"));
+            QCOMPARE(fixture.document.session().document().syncCursor, before.syncCursor);
+            QVERIFY(query.exec(QStringLiteral("DROP TRIGGER reject_snapshot")));
+            fixture.engine.syncNow();
+            QTRY_COMPARE(fixture.engine.state(), QStringLiteral("synced"));
+            QCOMPARE(fixture.workspace.store()->loadDocument(documentId).blocks.first().content,
+                     cloud->blocks.first().content);
+        }
+        QSqlDatabase::removeDatabase(connection);
+    }
+
+    void switchingDocumentsIgnoresOutstandingCreateResponse()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY(fixture.account.isConnected());
+        fixture.engine.connectDocument();
+        fixture.document.createDocument(QStringLiteral("Other local document"));
+        QTest::qWait(200);
+        QVERIFY(fixture.document.session().document().cloudId.isEmpty());
+        QVERIFY(fixture.engine.cloudId().isEmpty());
+        QVERIFY(!fixture.engine.busy());
+    }
+
+    void numericServerIdsRemainMappedAcrossEdits()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        fixture.api.numericIds = true;
+        QTRY_VERIFY(fixture.account.isConnected());
+        fixture.engine.connectDocument();
+        QTRY_COMPARE(fixture.engine.state(), QStringLiteral("synced"));
+        QVERIFY(!fixture.workspace.store()->remoteIdForLocal(
+            fixture.document.documentId(), fixture.localBlockId()).isEmpty());
+        for (int i = 0; i < 10; ++i) {
+            fixture.document.setBlockContent(0, QString::number(i), false);
+            QVERIFY(fixture.document.saveIfDirty());
+            fixture.engine.syncNow();
+            QTRY_COMPARE(fixture.engine.state(), QStringLiteral("synced"));
+        }
+        QCOMPARE(fixture.api.document(fixture.engine.cloudId())->blocks.size(), 2);
+    }
+
+    void mutationAcknowledgementDoesNotSkipUnseenRemoteChanges()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY(fixture.account.isConnected());
+        fixture.engine.connectDocument();
+        QTRY_COMPARE(fixture.engine.state(), QStringLiteral("synced"));
+        auto *cloud = fixture.api.document(fixture.engine.cloudId());
+        cloud->title = QStringLiteral("browser title");
+        cloud->changes.append({++cloud->sequence, QStringLiteral("title_update"),
+                              {{QStringLiteral("title"), cloud->title}}});
+        fixture.document.setBlockContent(0, QStringLiteral("desktop edit"), false);
+        QVERIFY(fixture.document.saveIfDirty());
+        fixture.engine.syncNow();
+        QTRY_COMPARE(fixture.engine.state(), QStringLiteral("synced"));
+        QCOMPARE(fixture.document.session().document().title, cloud->title);
+    }
+
     void localEditsPushAndClearPending()
     {
         Fixture fixture;
@@ -629,6 +750,14 @@ private slots:
         QCOMPARE(fixture.document.blocks()->get(0).value(QStringLiteral("content")).toString(),
                  QStringLiteral("browser edit"));
         QVERIFY(!fixture.document.isDirty());
+        QCOMPARE(fixture.workspace.store()->remoteVersionForLocal(
+                     fixture.document.documentId(), fixture.localBlockId()),
+                 cloud->blocks.first().lockVersion);
+        DocumentController reopened;
+        reopened.setWorkspace(&fixture.workspace);
+        QVERIFY(reopened.openDocument(fixture.document.documentId()));
+        QCOMPARE(reopened.session().document().blocks.first().content,
+                 QStringLiteral("browser edit"));
     }
 
     void lockConflictsAreRetainedAndResolvable()
@@ -929,12 +1058,16 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(fixture.account.isConnected(), 5000);
         fixture.engine.connectDocument();
         QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
+        const QString beforeId = fixture.localBlockId();
+        const QString beforeRemote = fixture.workspace.store()->remoteIdForLocal(fixture.document.documentId(), beforeId);
         const int snapshotsAfterConnect = fixture.api.snapshotCount;
 
         fixture.api.setCursorExpired(true);
         fixture.engine.syncNow();
         QTRY_COMPARE_WITH_TIMEOUT(fixture.engine.state(), QStringLiteral("synced"), 5000);
         QVERIFY(fixture.api.snapshotCount > snapshotsAfterConnect);
+        QCOMPARE(fixture.localBlockId(), beforeId);
+        QCOMPARE(fixture.workspace.store()->remoteIdForLocal(fixture.document.documentId(), beforeId), beforeRemote);
         QCOMPARE(fixture.document.blocks()->get(0).value(QStringLiteral("content")).toString(),
                  QStringLiteral("local paragraph"));
     }

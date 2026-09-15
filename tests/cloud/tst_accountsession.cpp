@@ -105,11 +105,13 @@ private:
                 return respond(401, "Unauthorized", R"({"error":"invalid token"})");
             if (!m_capabilitiesCalled)
                 return respond(403, "Forbidden", R"({"error":"wrong audience"})");
+            if (!capabilitiesOverride.isEmpty())
+                return respond(200, "OK", capabilitiesOverride);
             return respond(200, "OK",
                            R"({"protocol":{"name":"writero-desktop","version":1},
                                "account":{"id":7,"email":"desk@example.com"},
                                "subscription":{"plan":"starter","active":true},
-                               "hosted_ai":{"enabled":true,"remaining_credit_usd":12.5},
+                               "hosted_ai":{"enabled":true,"remaining_credit_usd":12.5,"models":["text"],"image_models":["image"],"explanation_models":["explain"]},
                                "entitlements":["cloud_sync","hosted_ai"],
                                "limits":{"blocks_per_page":100,"max_media_mb":50}})");
         }
@@ -124,6 +126,7 @@ private:
 
 public:
     void expireSession() { m_expireSession = true; }
+    QByteArray capabilitiesOverride;
 
 private:
     QString m_expectedChallenge;
@@ -251,6 +254,8 @@ private slots:
 
         QTRY_VERIFY_WITH_TIMEOUT(!session.isConnected(), 5000);
         QVERIFY(session.lastError().contains(QStringLiteral("expired")));
+        QVERIFY(session.accountEmail().isEmpty());
+        QVERIFY(session.hostedModels().isEmpty());
     }
 
     void signOutRevokesAndClearsAccount()
@@ -269,9 +274,190 @@ private slots:
 
         session.signOut();
         QTRY_VERIFY_WITH_TIMEOUT(!session.isConnected(), 5000);
-        QVERIFY(server.revokeCalled());
+        QTRY_VERIFY(server.revokeCalled());
         QVERIFY(session.accountEmail().isEmpty());
         QVERIFY(session.entitlements().isEmpty());
+    }
+
+    void changingOriginDoesNotExposeToken()
+    {
+        StubServer server;
+        QVERIFY(server.listen());
+        AccountSession session;
+        QVERIFY(session.importToken(QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()), "wrt_stub_token"));
+        QTRY_VERIFY(session.isConnected());
+        session.setBaseUrl("http://127.0.0.1:1");
+        QVERIFY(session.accessToken().isEmpty());
+        QVERIFY(!session.isConnected());
+        QVERIFY(session.accountEmail().isEmpty());
+    }
+
+    void clearDuringCapabilitiesCannotReconnect()
+    {
+        StubServer server;
+        QVERIFY(server.listen());
+        AccountSession session;
+        session.importToken(QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()), "wrt_stub_token");
+        session.clearLocalSession();
+        QTest::qWait(200);
+        QVERIFY(!session.isConnected());
+        QVERIFY(session.accountEmail().isEmpty());
+    }
+
+    void clearRemovesModelCatalogs()
+    {
+        StubServer server;
+        QVERIFY(server.listen());
+        AccountSession session;
+        session.importToken(QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()), "wrt_stub_token");
+        QTRY_VERIFY(session.isConnected());
+        QVERIFY(!session.hostedModels().isEmpty());
+        session.clearLocalSession();
+        QVERIFY(session.hostedModels().isEmpty());
+        QVERIFY(session.hostedImageModels().isEmpty());
+        QVERIFY(session.hostedExplanationModels().isEmpty());
+    }
+
+    void invalidCapabilities_data()
+    {
+        QTest::addColumn<QByteArray>("body");
+        QTest::newRow("invalid-json") << QByteArray("<html>Error</html>");
+        QTest::newRow("unsupported-version") << QByteArray(R"({"protocol":{"version":2},"account":{"email":"a@example.com"}})");
+    }
+
+    void invalidCapabilities()
+    {
+        QFETCH(QByteArray, body);
+        StubServer server;
+        QVERIFY(server.listen());
+        server.capabilitiesOverride = body;
+        AccountSession session;
+        session.importToken(QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()), "wrt_stub_token");
+        QTRY_VERIFY(!session.isBusy());
+        QVERIFY(!session.isConnected());
+        QVERIFY(!session.lastError().isEmpty());
+    }
+
+    void callbackFragments_data()
+    {
+        QTest::addColumn<bool>("fragmented");
+        QTest::newRow("fragmented") << true;
+        QTest::newRow("forged-error") << false;
+    }
+
+    void callbackFragments()
+    {
+        QFETCH(bool, fragmented);
+        StubServer server;
+        QVERIFY(server.listen());
+        AccountSession session;
+        session.setBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
+        QSignalSpy authorization(&session, &AccountSession::authorizationRequired);
+        session.signIn();
+        QTRY_COMPARE(authorization.count(), 1);
+        const QUrlQuery query(authorizeUrlFrom(authorization));
+        server.setExpectedChallenge(query.queryItemValue("code_challenge"));
+        const QUrl redirect(query.queryItemValue("redirect_uri"));
+        QTcpSocket socket;
+        socket.connectToHost(redirect.host(), redirect.port());
+        QVERIFY(socket.waitForConnected(2000));
+        if (fragmented) {
+            socket.write("GET /call");
+            socket.flush();
+            QTest::qWait(30);
+            socket.write(QString("back?code=test-code&state=%1 HTTP/1.1\r\nHost: localhost\r\n\r\n").arg(query.queryItemValue("state")).toUtf8());
+            socket.flush();
+            QTRY_VERIFY_WITH_TIMEOUT(session.isConnected(), 1000);
+        } else {
+            socket.write("GET /callback?error=access_denied&state=forged HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            socket.flush();
+            QTRY_VERIFY(socket.bytesAvailable() > 0);
+            QVERIFY(session.isBusy());
+            completeBrowserCallback(server, authorizeUrlFrom(authorization));
+            QTRY_VERIFY(session.isConnected());
+        }
+    }
+
+    void authorizationCodeCannotBeSubmittedTwice()
+    {
+        StubServer server;
+        QVERIFY(server.listen());
+        AccountSession session;
+        session.setBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
+        QSignalSpy authorization(&session, &AccountSession::authorizationRequired);
+        session.signIn();
+        QTRY_COMPARE(authorization.count(), 1);
+        const QUrlQuery query(authorizeUrlFrom(authorization));
+        server.setExpectedChallenge(query.queryItemValue("code_challenge"));
+        QVERIFY(session.completeAuthorization("test-code", query.queryItemValue("state")));
+        QVERIFY(!session.completeAuthorization("test-code", query.queryItemValue("state")));
+        QTRY_VERIFY(session.isConnected());
+    }
+
+    void signOutCancelsPendingBrowser()
+    {
+        StubServer server;
+        QVERIFY(server.listen());
+        AccountSession session;
+        session.setBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
+        QSignalSpy authorization(&session, &AccountSession::authorizationRequired);
+        session.signIn();
+        session.signOut();
+        QTest::qWait(200);
+        QCOMPARE(authorization.count(), 0);
+        QVERIFY(!session.isBusy());
+    }
+
+    void originCredentialsRestoreOnlyAtTheirServer()
+    {
+        StubServer first;
+        StubServer second;
+        QVERIFY(first.listen());
+        QVERIFY(second.listen());
+        const QString firstUrl = QStringLiteral("http://127.0.0.1:%1").arg(first.serverPort());
+        const QString secondUrl = QStringLiteral("http://127.0.0.1:%1").arg(second.serverPort());
+        AccountSession session;
+        session.importToken(firstUrl, "wrt_stub_token");
+        QTRY_VERIFY(session.isConnected());
+        session.setBaseUrl(secondUrl);
+        session.restoreSession();
+        QVERIFY(!session.isConnected());
+        QVERIFY(session.accessToken().isEmpty());
+        session.setBaseUrl(firstUrl);
+        session.restoreSession();
+        QTRY_VERIFY(session.isConnected());
+        session.clearLocalSession();
+    }
+
+    void replacingAccountInvalidatesOldResponse()
+    {
+        StubServer first;
+        StubServer second;
+        QVERIFY(first.listen());
+        QVERIFY(second.listen());
+        first.expireSession();
+        AccountSession session;
+        session.importToken(QStringLiteral("http://127.0.0.1:%1").arg(first.serverPort()), "wrt_stub_token");
+        session.importToken(QStringLiteral("http://127.0.0.1:%1").arg(second.serverPort()), "wrt_stub_token");
+        QTRY_VERIFY(session.isConnected());
+        QTest::qWait(100);
+        QCOMPARE(session.accessToken(), QStringLiteral("wrt_stub_token"));
+        QVERIFY(session.isConnected());
+        session.clearLocalSession();
+    }
+
+    void sessionCredentialFallbackSharesAndRemovesSecrets()
+    {
+        CredentialStore first;
+        CredentialStore second;
+        QVERIFY(!first.isPersistent());
+        const QString key = QStringLiteral("qa09.synthetic.credential");
+        QVERIFY(first.store(key, "synthetic-one"));
+        QCOMPARE(second.load(key), QStringLiteral("synthetic-one"));
+        QVERIFY(second.store(key, "synthetic-two"));
+        QCOMPARE(first.load(key), QStringLiteral("synthetic-two"));
+        QVERIFY(first.remove(key));
+        QVERIFY(second.load(key).isEmpty());
     }
 
     void restoreWithoutTokenStaysDisconnected()

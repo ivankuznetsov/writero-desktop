@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QVector>
 
+#include <functional>
+
 #include "document/document.h"
 #include "document/documentchange.h"
 
@@ -43,6 +45,10 @@ public:
     QVector<DocumentChange> drainJournal();
     void clearJournal() { m_journal.clear(); }
 
+    /// Groups synchronous local mutation commands into one undo step.
+    /// The callback must not load documents, apply remote changes, or undo/redo.
+    void editGroup(const std::function<void()> &edit);
+
     /// Mutations return true when the document actually changed.
     bool setTitle(const QString &title, bool coalesce = false);
     bool insertBlock(int index, const Block &block, const QString &source = QStringLiteral("local"));
@@ -68,7 +74,9 @@ public:
     bool undo();
     bool redo();
 
-    // --- Remote application (no journal, undo, or dirty marking) ---
+    // --- Remote application (no journal or dirty marking) ---
+    // Remote mutations invalidate local history: its snapshots and indices
+    // describe the previous remote baseline and cannot safely be replayed.
 
     void applyRemoteTitle(const QString &title);
     void applyRemoteUpdate(const QString &blockId, const Block &block);
@@ -108,16 +116,20 @@ private:
 
     void pushChange(DocumentChange change, bool coalesce);
     void recordJournalOnly(const DocumentChange &change);
+    void appendTrailingEmptyBlock(const QString &source, bool includeInUndo);
+    void groupUndoSince(qsizetype first);
+    void invalidateHistory();
     bool canCoalesce(const DocumentChange &previous, const DocumentChange &next) const;
     DocumentChange invert(const DocumentChange &change) const;
 
     void setDirty(bool dirty);
 
     Document m_document;
-    QVector<DocumentChange> m_undoStack;
-    QVector<DocumentChange> m_redoStack;
+    QVector<QVector<DocumentChange>> m_undoStack;
+    QVector<QVector<DocumentChange>> m_redoStack;
     QVector<DocumentChange> m_journal;
     QElapsedTimer m_sinceLastChange;
+    bool m_lastChangeCoalescible = false;
     bool m_dirty = false;
     bool m_loading = false;
 };

@@ -21,7 +21,17 @@ CloudClient::CloudClient(QObject *parent)
 
 void CloudClient::setAccount(AccountSession *account)
 {
+    cancelRequests();
     m_account = account;
+}
+
+void CloudClient::cancelRequests()
+{
+    ++m_requestGeneration;
+    for (QNetworkReply *reply : m_network->findChildren<QNetworkReply *>()) {
+        if (reply->isRunning())
+            reply->abort();
+    }
 }
 
 QString CloudClient::baseUrl() const
@@ -48,7 +58,12 @@ QNetworkRequest CloudClient::requestFor(const QString &path) const
 void CloudClient::finishJson(QNetworkReply *reply, const QString &operation,
                              std::function<void(const QJsonObject &)> onSuccess)
 {
-    connect(reply, &QNetworkReply::finished, this, [this, reply, operation, onSuccess] {
+    const quint64 generation = m_requestGeneration;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, operation, onSuccess, generation] {
+        if (generation != m_requestGeneration) {
+            reply->deleteLater();
+            return;
+        }
         const QByteArray body = reply->readAll();
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const bool ok = reply->error() == QNetworkReply::NoError;
@@ -171,7 +186,12 @@ void CloudClient::downloadMedia(const QString &documentId, const QString &remote
         QStringLiteral("/api/desktop/v1/documents/%1/blocks/%2/media")
             .arg(documentId, remoteBlockId));
     QNetworkReply *reply = m_network->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, remoteBlockId] {
+    const quint64 generation = m_requestGeneration;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, remoteBlockId, generation] {
+        if (generation != m_requestGeneration) {
+            reply->deleteLater();
+            return;
+        }
         const QByteArray data = reply->readAll();
         const QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();

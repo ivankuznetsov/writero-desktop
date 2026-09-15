@@ -9,6 +9,7 @@ list against the built binary under `docs/verification.md`.
 | Component | Version | License | Purpose |
 |---|---|---|---|
 | Qt 6 (Core, Gui, Network, Qml, Quick, QuickControls2, Sql, Svg, Test, QuickTest) | ≥ 6.5 | LGPL-3.0-only / GPL-3.0-only (module terms vary; see below) | Application framework |
+| Qt Image Formats plugins | Match Qt version | Qt module license terms apply | WebP image reading and writing |
 | SQLite | ≥ 3.35 | Public domain | Workspace storage |
 | libsecret | ≥ 0.20 | LGPL-2.1-or-later | Secret Service access |
 

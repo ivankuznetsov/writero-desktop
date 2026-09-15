@@ -234,8 +234,19 @@ QString Workspace::exportBundleTo(const QString &directory, const QString &docum
         media.mimeType = record.mimeType;
         media.byteSize = record.byteSize;
         QFile file(m_media.absolutePathForSha(record.sha256, record.mimeType));
-        if (file.open(QIODevice::ReadOnly))
-            media.data = file.readAll();
+        if (!file.open(QIODevice::ReadOnly)) {
+            if (error)
+                *error = QStringLiteral("Cannot read bundle media %1: %2")
+                             .arg(record.sha256, file.errorString());
+            return {};
+        }
+        media.data = file.readAll();
+        if (file.error() != QFileDevice::NoError) {
+            if (error)
+                *error = QStringLiteral("Cannot read bundle media %1: %2")
+                             .arg(record.sha256, file.errorString());
+            return {};
+        }
         contents.media.append(media);
     }
 
@@ -267,19 +278,20 @@ QString Workspace::importBundleFrom(const QString &directory, QString *error)
         idMap.insert(oldId, block.id);
     }
 
-    if (!m_store.createDocument(document, error))
-        return {};
-
     QHash<QString, qint64> mediaIds;
     for (const documentio::BundleContents::MediaFile &media : contents.media) {
         if (!m_media.contains(media.sha256)) {
-            QString mediaError;
-            m_media.importData(media.data, media.filename, media.mimeType, &mediaError);
+            if (m_media.importData(media.data, media.filename, media.mimeType, error).isEmpty())
+                return {};
         }
         const qint64 mediaId =
             m_store.ensureMedia(media.sha256, media.filename, media.mimeType, media.byteSize);
-        if (mediaId > 0)
-            mediaIds.insert(media.sha256, mediaId);
+        if (mediaId <= 0) {
+            if (error)
+                *error = m_store.lastError();
+            return {};
+        }
+        mediaIds.insert(media.sha256, mediaId);
     }
 
     for (Block &block : document.blocks) {
@@ -291,13 +303,16 @@ QString Workspace::importBundleFrom(const QString &directory, QString *error)
             block.mediaId = 0;
     }
 
-    if (!m_store.saveDocument(document, {}, {}, error))
-        return {};
-    for (const Revision &revision : contents.revisions) {
-        Revision remapped = revision;
-        remapped.blockId = idMap.value(revision.blockId, revision.blockId);
-        importRevision(document.id, remapped);
+    QVector<Revision> revisions;
+    // Export stores newest first. Insert oldest first to retain the ordering
+    // of revisions sharing the same timestamp when SQLite assigns fresh IDs.
+    for (auto it = contents.revisions.crbegin(); it != contents.revisions.crend(); ++it) {
+        Revision remapped = *it;
+        remapped.blockId = idMap.value(it->blockId, it->blockId);
+        revisions.append(remapped);
     }
+    if (!m_store.saveDocument(document, {}, {}, error, revisions))
+        return {};
 
     m_documents.refresh();
     return document.id;

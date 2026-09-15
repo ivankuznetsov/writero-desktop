@@ -141,6 +141,9 @@ QVector<AiMessage> buildMessages(Operation operation, const Document &document, 
         break;
     case Operation::Humanize:
         user = QStringLiteral("Text to humanize:\n\n%1").arg(block.content);
+        if (!instruction.isEmpty() && instruction.trimmed().compare(
+                QStringLiteral("Humanize"), Qt::CaseInsensitive) != 0)
+            user += QStringLiteral("\n\nInstruction: %1").arg(instruction);
         break;
     case Operation::Polish:
         user = block.content;
@@ -165,7 +168,10 @@ QVector<AiMessage> buildMessages(Operation operation, const Document &document, 
 QVector<AiMessage> buildBulkMessages(Operation operation, const Document &document,
                                      const QString &instruction)
 {
-    QString system = operationSystemPrompt(operation);
+    QString system = QStringLiteral("Rewrite the provided blocks according to the user's "
+                                    "instructions. Preserve each block's structure. Reply with a "
+                                    "JSON array of objects {\"id\": \"<block id>\", \"content\": "
+                                    "\"<rewritten text>\"} in the same order, without commentary.");
     if (operation == Operation::Polish) {
         system = QStringLiteral("You are a proofreader. Fix spelling, grammar, punctuation, and "
                                 "typography in the list of blocks. Preserve meaning, markdown, "

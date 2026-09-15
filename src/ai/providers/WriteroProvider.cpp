@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHttpMultiPart>
+#include <QMimeDatabase>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -37,6 +38,7 @@ WriteroProvider::~WriteroProvider()
     m_replies.clear();
     for (QNetworkReply *reply : replies) {
         if (reply) {
+            disconnect(reply, nullptr, this, nullptr);
             reply->abort();
             reply->deleteLater();
         }
@@ -53,6 +55,7 @@ void WriteroProvider::cancel(const QString &operationId)
     QNetworkReply *reply = m_replies.take(operationId);
     if (!reply)
         return;
+    disconnect(reply, nullptr, this, nullptr);
     reply->abort();
     reply->deleteLater();
 }
@@ -110,6 +113,8 @@ void WriteroProvider::submit(const QString &operationId, const QString &kind,
     m_replies.insert(operationId, reply);
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, operationId] {
+        if (m_replies.value(operationId) != reply)
+            return;
         m_replies.remove(operationId);
         const QByteArray raw = reply->readAll();
         const QJsonObject json = QJsonDocument::fromJson(raw).object();
@@ -154,6 +159,8 @@ void WriteroProvider::uploadMedia(const QString &requestId, const QString &path)
         return;
     }
 
+    if (m_replies.contains(requestId))
+        return;
     QFile *file = new QFile(path);
     if (!file->open(QIODevice::ReadOnly)) {
         delete file;
@@ -166,10 +173,8 @@ void WriteroProvider::uploadMedia(const QString &requestId, const QString &path)
     part.setHeader(QNetworkRequest::ContentDispositionHeader,
                    QStringLiteral("form-data; name=\"file\"; filename=\"%1\"")
                        .arg(QFileInfo(path).fileName()));
-    const QString suffix = QFileInfo(path).suffix().toLower();
     part.setHeader(QNetworkRequest::ContentTypeHeader,
-                   suffix == QLatin1String("png") ? QStringLiteral("image/png")
-                                                  : QStringLiteral("image/jpeg"));
+                   QMimeDatabase().mimeTypeForFile(path).name());
     part.setBodyDevice(file);
     file->setParent(multipart);
     multipart->append(part);
@@ -183,11 +188,16 @@ void WriteroProvider::uploadMedia(const QString &requestId, const QString &path)
                          QByteArrayLiteral("Bearer ") + m_account->accessToken().toUtf8());
     QNetworkReply *reply = m_network->post(request, multipart);
     multipart->setParent(reply);
+    m_replies.insert(requestId, reply);
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, requestId] {
+        if (m_replies.value(requestId) != reply)
+            return;
+        m_replies.remove(requestId);
         const QByteArray raw = reply->readAll();
         const QJsonObject json = QJsonDocument::fromJson(raw).object();
-        const bool ok = reply->error() == QNetworkReply::NoError;
+        const bool ok = reply->error() == QNetworkReply::NoError
+                        && !json.value(QStringLiteral("signed_id")).toString().isEmpty();
         reply->deleteLater();
         if (!ok) {
             emit mediaUploadFailed(
@@ -201,7 +211,13 @@ void WriteroProvider::uploadMedia(const QString &requestId, const QString &path)
 
 void WriteroProvider::fetchResultMedia(const QString &operationId, qint64 jobId)
 {
-    QString base = m_account ? m_account->baseUrl() : QString();
+    if (!m_account || m_account->accessToken().isEmpty()) {
+        emit failed(operationId, QStringLiteral("Sign in to use hosted AI."));
+        return;
+    }
+    if (m_replies.contains(operationId))
+        return;
+    QString base = m_account->baseUrl();
     while (base.endsWith(QLatin1Char('/')))
         base.chop(1);
 
@@ -212,10 +228,15 @@ void WriteroProvider::fetchResultMedia(const QString &operationId, qint64 jobId)
                              QByteArrayLiteral("Bearer ") + m_account->accessToken().toUtf8());
     }
     QNetworkReply *reply = m_network->get(request);
+    m_replies.insert(operationId, reply);
     connect(reply, &QNetworkReply::finished, this, [this, reply, operationId] {
+        if (m_replies.value(operationId) != reply)
+            return;
+        m_replies.remove(operationId);
         const QByteArray data = reply->readAll();
         const QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
-        const bool ok = reply->error() == QNetworkReply::NoError && !data.isEmpty();
+        const bool ok = reply->error() == QNetworkReply::NoError && !data.isEmpty()
+                        && contentType.startsWith(QLatin1String("image/"), Qt::CaseInsensitive);
         reply->deleteLater();
         if (!ok) {
             emit failed(operationId, QStringLiteral("Could not download the generated image."));

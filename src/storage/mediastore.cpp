@@ -16,6 +16,7 @@ MediaStore::~MediaStore() = default;
 
 bool MediaStore::open(const QString &workspaceRoot, QString *error)
 {
+    close();
     QDir root(workspaceRoot);
     if (!root.exists() && !root.mkpath(QStringLiteral("."))) {
         if (error)
@@ -29,6 +30,7 @@ bool MediaStore::open(const QString &workspaceRoot, QString *error)
     if (!QDir().mkpath(m_stagingRoot)) {
         if (error)
             *error = QStringLiteral("Cannot create media staging directory");
+        close();
         return false;
     }
 
@@ -112,19 +114,28 @@ QString MediaStore::importData(const QByteArray &data, const QString &filename,
 QString MediaStore::relativePathForSha(const QString &sha256, const QString &mimeType) const
 {
     Q_UNUSED(mimeType);
-    if (sha256.size() < 2)
+    if (sha256.size() != 64)
         return {};
+    for (const QChar ch : sha256) {
+        if (!(ch >= QLatin1Char('0') && ch <= QLatin1Char('9'))
+            && !(ch >= QLatin1Char('a') && ch <= QLatin1Char('f')))
+            return {};
+    }
     return QStringLiteral("%1/%2").arg(sha256.left(2), sha256);
 }
 
 QString MediaStore::absolutePathForSha(const QString &sha256, const QString &mimeType) const
 {
-    return QDir(m_mediaRoot).filePath(relativePathForSha(sha256, mimeType));
+    const QString relative = relativePathForSha(sha256, mimeType);
+    if (!isOpen() || relative.isEmpty())
+        return {};
+    return QDir(m_mediaRoot).absoluteFilePath(relative);
 }
 
 bool MediaStore::contains(const QString &sha256) const
 {
-    return QFile::exists(absolutePathForSha(sha256));
+    const QString path = absolutePathForSha(sha256);
+    return !path.isEmpty() && QFileInfo(path).isFile();
 }
 
 QString MediaStore::stagingPath() const
@@ -134,6 +145,8 @@ QString MediaStore::stagingPath() const
 
 int MediaStore::cleanupStaging()
 {
+    if (!isOpen())
+        return 0;
     int removed = 0;
     QDir staging(m_stagingRoot);
     const QFileInfoList entries =
@@ -150,6 +163,8 @@ int MediaStore::cleanupStaging()
 
 int MediaStore::removeUnreferenced(const QSet<QString> &referencedShas)
 {
+    if (!isOpen())
+        return 0;
     int removed = 0;
     QDir media(m_mediaRoot);
     const QFileInfoList buckets =

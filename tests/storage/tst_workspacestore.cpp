@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFile>
 #include <QProcess>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 
 #include "document/documentsession.h"
@@ -17,6 +18,155 @@ class TestWorkspaceStore : public QObject
     Q_OBJECT
 
 private slots:
+    void closedMediaCleanupNeverTouchesWorkingDirectory()
+    {
+        QTemporaryDir dir;
+        const QString previous = QDir::currentPath();
+        QVERIFY(QDir().mkpath(dir.filePath("bucket")));
+        QFile file(dir.filePath("bucket/valuable"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("keep");
+        file.close();
+        QVERIFY(QDir::setCurrent(dir.path()));
+        MediaStore media;
+        const int removed = media.removeUnreferenced({});
+        QDir::setCurrent(previous);
+        QCOMPARE(removed, 0);
+        QVERIFY(file.exists());
+    }
+
+    void failedMediaOpenLeavesStoreClosed()
+    {
+        QTemporaryDir dir;
+        QFile blocker(dir.filePath("media"));
+        QVERIFY(blocker.open(QIODevice::WriteOnly));
+        blocker.close();
+        MediaStore media;
+        QString error;
+        QVERIFY(!media.open(dir.path(), &error));
+        QVERIFY(!media.isOpen());
+    }
+
+    void mediaRejectsInvalidHashes()
+    {
+        QTemporaryDir dir;
+        MediaStore media;
+        QVERIFY(media.open(dir.path()));
+        QVERIFY(!media.contains(QString()));
+        QVERIFY(media.absolutePathForSha("../../outside").isEmpty());
+        QVERIFY(media.relativePathForSha("zz").isEmpty());
+        media.close();
+        QVERIFY(media.absolutePathForSha(QString(64, 'a')).isEmpty());
+    }
+
+    void failedMigrationLeavesStoreClosed()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("workspace.db");
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", "broken-schema");
+            db.setDatabaseName(path);
+            QVERIFY(db.open());
+            QSqlQuery query(db);
+            QVERIFY(query.exec("CREATE TABLE documents (id TEXT, sync_cursor INTEGER)"));
+            db.close();
+        }
+        QSqlDatabase::removeDatabase("broken-schema");
+        WorkspaceStore store;
+        QString error;
+        QVERIFY(!store.open(path, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!store.isOpen());
+    }
+
+    void deletingDocumentRemovesDetachedState()
+    {
+        QTemporaryDir dir;
+        WorkspaceStore store;
+        QVERIFY(store.open(dir.filePath("workspace.db")));
+        Document document;
+        document.id = newId();
+        document.title = "Delete everything";
+        document.blocks = {Block::create(BlockType::Text, "original")};
+        const QString blockId = document.blocks.first().id;
+        PendingOperation operation{newId(), "block_update", {}, {}};
+        QVERIFY(store.saveDocument(document, {}, {operation}));
+        QVERIFY(store.mapBlock(document.id, blockId, "remote"));
+        SyncConflict conflict;
+        conflict.id = newId();
+        conflict.documentId = document.id;
+        conflict.blockId = blockId;
+        QVERIFY(store.saveConflict(conflict));
+        const qint64 mediaId = store.ensureMedia(QString(64, 'a'), "a", "image/png", 1);
+        QVERIFY(mediaId > 0);
+        QVERIFY(store.addMediaVersion(blockId, mediaId));
+        Revision revision;
+        revision.blockId = blockId;
+        revision.event = "destroy";
+        revision.source = "local";
+        QVERIFY(store.insertRevision(document.id, revision));
+        document.blocks.clear();
+        QVERIFY(store.saveDocument(document, {}));
+        QVERIFY(store.deleteDocument(document.id));
+        QVERIFY(store.pendingOperations(document.id).isEmpty());
+        QVERIFY(store.remoteIdForLocal(document.id, blockId).isEmpty());
+        QCOMPARE(store.conflictCount(document.id), 0);
+        QVERIFY(store.mediaVersions(blockId).isEmpty());
+        QVERIFY(store.referencedMediaShas().isEmpty());
+    }
+
+    void deletingImportedHistoryKeepsSourceMediaVersions()
+    {
+        QTemporaryDir dir;
+        WorkspaceStore store;
+        QVERIFY(store.open(dir.filePath("workspace.db")));
+        Document source;
+        source.id = newId();
+        source.title = "Source";
+        source.blocks = {Block::create(BlockType::Text, "source")};
+        QVERIFY(store.saveDocument(source, {}));
+        const QString blockId = source.blocks.first().id;
+        const auto mediaId = store.ensureMedia(QString(64, 'b'), "b", "image/png", 1);
+        QVERIFY(store.addMediaVersion(blockId, mediaId));
+        Document imported;
+        imported.id = newId();
+        imported.title = "Imported history";
+        QVERIFY(store.saveDocument(imported, {}));
+        Revision revision;
+        revision.blockId = blockId;
+        QVERIFY(store.insertRevision(imported.id, revision));
+        QVERIFY(store.deleteDocument(imported.id));
+        QCOMPARE(store.mediaVersions(blockId), QVector<qint64>{mediaId});
+        QVERIFY(store.deleteDocument(source.id));
+        QVERIFY(store.mediaVersions(blockId).isEmpty());
+    }
+
+    void failedCommitRollsBackAndAllowsRetry()
+    {
+        QTemporaryDir dir;
+        WorkspaceStore store;
+        QVERIFY(store.open(dir.filePath("workspace.db")));
+        Document document;
+        document.id = newId();
+        document.title = "Committed";
+        document.blocks = {Block::create(BlockType::Text, "original")};
+        QVERIFY(store.saveDocument(document, {}));
+        const QString connection = QSqlDatabase::connectionNames().first();
+        {
+            QSqlQuery query(QSqlDatabase::database(connection));
+            QVERIFY(query.exec("PRAGMA defer_foreign_keys = ON"));
+        }
+        document.title = "Must roll back";
+        document.blocks[0].mediaId = 99999;
+        QString error;
+        QVERIFY(!store.saveDocument(document, {}, {}, &error));
+        QCOMPARE(store.loadDocument(document.id).title, QString("Committed"));
+        document.title = "Retry";
+        document.blocks[0].mediaId = 0;
+        QVERIFY2(store.saveDocument(document, {}, {}, &error), qPrintable(error));
+        QCOMPARE(store.loadDocument(document.id).title, QString("Retry"));
+    }
+
     void saveAndLoadRoundTrip()
     {
         QTemporaryDir dir;

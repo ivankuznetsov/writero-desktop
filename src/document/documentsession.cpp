@@ -3,6 +3,7 @@
 #include "document/listcontent.h"
 
 #include <QDateTime>
+#include <QScopeGuard>
 #include <utility>
 
 namespace writero {
@@ -82,6 +83,9 @@ bool DocumentSession::insertBlock(int index, const Block &block, const QString &
     if (inserted.id.isEmpty())
         inserted.id = newId();
 
+    if (m_document.indexOf(inserted.id) >= 0)
+        return false;
+
     const int at = qBound(0, index, m_document.blocks.size());
     DocumentChange change;
     change.kind = DocumentChange::Kind::InsertBlock;
@@ -92,7 +96,7 @@ bool DocumentSession::insertBlock(int index, const Block &block, const QString &
 
     applyInsert(at, inserted);
     pushChange(change, false);
-    ensureTrailingEmptyBlock(source);
+    appendTrailingEmptyBlock(source, true);
     return true;
 }
 
@@ -116,7 +120,7 @@ bool DocumentSession::removeBlock(int index, const QString &source)
 
     applyRemove(index);
     pushChange(change, false);
-    ensureTrailingEmptyBlock(source);
+    appendTrailingEmptyBlock(source, true);
     return true;
 }
 
@@ -163,7 +167,7 @@ bool DocumentSession::updateBlock(int index, const Block &block, const QString &
     pushChange(change, coalesce);
 
     if (index == m_document.blocks.size() - 1)
-        ensureTrailingEmptyBlock(source);
+        appendTrailingEmptyBlock(source, true);
     return true;
 }
 
@@ -214,6 +218,7 @@ bool DocumentSession::moveBlock(int from, int to, const QString &source)
 
     applyMove(from, to);
     pushChange(change, false);
+    appendTrailingEmptyBlock(source, true);
     return true;
 }
 
@@ -226,11 +231,15 @@ bool DocumentSession::splitBlock(int index, int offset, const QString &source)
     const int position = qBound(0, offset, original.content.size());
 
     Block first = original;
-    first.content = original.content.left(position).trimmed();
+    first.content = original.content.left(position);
+    if (original.type != BlockType::Code)
+        first.content = first.content.trimmed();
 
     Block second = original;
     second.id = newId();
-    second.content = original.content.mid(position).trimmed();
+    second.content = original.content.mid(position);
+    if (original.type != BlockType::Code)
+        second.content = second.content.trimmed();
     second.revision = 1;
 
     if (blocktype::isList(original.type) && !second.content.isEmpty()
@@ -240,10 +249,12 @@ bool DocumentSession::splitBlock(int index, int offset, const QString &source)
             second.content = marker + second.content;
     }
 
+    const qsizetype historyStart = m_undoStack.size();
     const bool changedFirst = first.content != original.content;
     if (changedFirst)
         updateBlock(index, first, source);
     insertBlock(index + 1, second, source);
+    groupUndoSince(historyStart);
     return true;
 }
 
@@ -264,8 +275,10 @@ bool DocumentSession::mergeWithPrevious(int index, const QString &source)
         merged.content = previous.content + QLatin1Char('\n') + current.content;
     }
 
+    const qsizetype historyStart = m_undoStack.size();
     updateBlock(index - 1, merged, source);
     removeBlock(index, source);
+    groupUndoSince(historyStart);
     return true;
 }
 
@@ -284,6 +297,9 @@ bool DocumentSession::replaceAll(const BlockList &blocks, const QString &source)
 
 void DocumentSession::applyRemoteTitle(const QString &title)
 {
+    if (m_document.title == title)
+        return;
+    invalidateHistory();
     m_loading = true;
     applyTitle(title);
     m_loading = false;
@@ -296,7 +312,11 @@ void DocumentSession::applyRemoteUpdate(const QString &blockId, const Block &blo
         return;
     Block updated = block;
     updated.id = blockId;
-    updated.revision = m_document.blocks.at(index).revision + 1;
+    updated.revision = m_document.blocks.at(index).revision;
+    if (updated == m_document.blocks.at(index))
+        return;
+    ++updated.revision;
+    invalidateHistory();
     m_loading = true;
     applyUpdate(index, updated);
     m_loading = false;
@@ -304,6 +324,9 @@ void DocumentSession::applyRemoteUpdate(const QString &blockId, const Block &blo
 
 void DocumentSession::applyRemoteInsert(const Block &block, int index)
 {
+    if (block.id.isEmpty() || m_document.indexOf(block.id) >= 0)
+        return;
+    invalidateHistory();
     m_loading = true;
     applyInsert(qBound(0, index, m_document.blocks.size()), block);
     m_loading = false;
@@ -314,6 +337,7 @@ void DocumentSession::applyRemoteRemove(const QString &blockId)
     const int index = m_document.indexOf(blockId);
     if (index < 0)
         return;
+    invalidateHistory();
     m_loading = true;
     applyRemove(index);
     m_loading = false;
@@ -324,6 +348,7 @@ void DocumentSession::applyRemoteMove(const QString &blockId, int toIndex)
     const int index = m_document.indexOf(blockId);
     if (index < 0 || index == toIndex || toIndex < 0 || toIndex >= m_document.blocks.size())
         return;
+    invalidateHistory();
     m_loading = true;
     applyMove(index, toIndex);
     m_loading = false;
@@ -333,6 +358,9 @@ void DocumentSession::applyRemoteReset(const BlockList &blocks, const QString &t
                                        const QString &titleVersionSource)
 {
     Q_UNUSED(titleVersionSource);
+    if (m_document.blocks == blocks && m_document.title == title)
+        return;
+    invalidateHistory();
     m_loading = true;
     if (m_document.title != title)
         applyTitle(title);
@@ -340,21 +368,32 @@ void DocumentSession::applyRemoteReset(const BlockList &blocks, const QString &t
     m_loading = false;
 }
 
+void DocumentSession::invalidateHistory()
+{
+    m_undoStack.clear();
+    m_redoStack.clear();
+    m_sinceLastChange.invalidate();
+    emit historyChanged();
+}
+
 bool DocumentSession::undo()
 {
     if (m_undoStack.isEmpty())
         return false;
 
-    DocumentChange change = m_undoStack.takeLast();
+    const auto changes = m_undoStack.takeLast();
     m_loading = true;
-    applyChange(change, false);
+    for (auto it = changes.crbegin(); it != changes.crend(); ++it)
+        applyChange(*it, false);
     m_loading = false;
-    m_redoStack.append(change);
+    m_redoStack.append(changes);
 
-    DocumentChange journalEntry = invert(change);
-    journalEntry.source = QStringLiteral("undo");
-    journalEntry.at = QDateTime::currentDateTimeUtc();
-    m_journal.append(journalEntry);
+    for (auto it = changes.crbegin(); it != changes.crend(); ++it) {
+        DocumentChange journalEntry = invert(*it);
+        journalEntry.source = QStringLiteral("undo");
+        journalEntry.at = QDateTime::currentDateTimeUtc();
+        m_journal.append(journalEntry);
+    }
 
     m_sinceLastChange.invalidate();
     emit historyChanged();
@@ -367,16 +406,19 @@ bool DocumentSession::redo()
     if (m_redoStack.isEmpty())
         return false;
 
-    DocumentChange change = m_redoStack.takeLast();
+    const auto changes = m_redoStack.takeLast();
     m_loading = true;
-    applyChange(change, true);
+    for (const auto &change : changes)
+        applyChange(change, true);
     m_loading = false;
-    m_undoStack.append(change);
+    m_undoStack.append(changes);
 
-    DocumentChange journalEntry = change;
-    journalEntry.source = QStringLiteral("redo");
-    journalEntry.at = QDateTime::currentDateTimeUtc();
-    m_journal.append(journalEntry);
+    for (const auto &change : changes) {
+        DocumentChange journalEntry = change;
+        journalEntry.source = QStringLiteral("redo");
+        journalEntry.at = QDateTime::currentDateTimeUtc();
+        m_journal.append(journalEntry);
+    }
 
     m_sinceLastChange.invalidate();
     emit historyChanged();
@@ -385,6 +427,11 @@ bool DocumentSession::redo()
 }
 
 void DocumentSession::ensureTrailingEmptyBlock(const QString &source)
+{
+    appendTrailingEmptyBlock(source, false);
+}
+
+void DocumentSession::appendTrailingEmptyBlock(const QString &source, bool includeInUndo)
 {
     if (m_loading || m_document.hasTrailingEmptyTextBlock())
         return;
@@ -401,6 +448,25 @@ void DocumentSession::ensureTrailingEmptyBlock(const QString &source)
 
     applyInsert(index, block);
     recordJournalOnly(change);
+    if (includeInUndo && !m_undoStack.isEmpty())
+        m_undoStack.last().append(change);
+}
+
+void DocumentSession::editGroup(const std::function<void()> &edit)
+{
+    const qsizetype historyStart = m_undoStack.size();
+    m_sinceLastChange.invalidate();
+    const auto finish = qScopeGuard([&] { groupUndoSince(historyStart); });
+    edit();
+}
+
+void DocumentSession::groupUndoSince(qsizetype first)
+{
+    while (m_undoStack.size() > first + 1) {
+        const auto next = m_undoStack.takeAt(first + 1);
+        m_undoStack[first] += next;
+    }
+    m_sinceLastChange.invalidate();
 }
 
 void DocumentSession::applyChange(const DocumentChange &change, bool forward)
@@ -490,26 +556,30 @@ void DocumentSession::pushChange(DocumentChange change, bool coalesce)
 {
     change.at = QDateTime::currentDateTimeUtc();
 
-    const bool merge = coalesce && !m_undoStack.isEmpty() && m_sinceLastChange.isValid()
+    const bool merge = coalesce && m_lastChangeCoalescible && !m_undoStack.isEmpty() && m_sinceLastChange.isValid()
         && m_sinceLastChange.elapsed() <= CoalesceWindowMs
-        && canCoalesce(m_undoStack.last(), change);
+        && canCoalesce(m_undoStack.last().first(), change);
 
     if (merge) {
-        DocumentChange &top = m_undoStack.last();
+        DocumentChange &top = m_undoStack.last().first();
         top.afterBlock = change.afterBlock;
         top.afterTitle = change.afterTitle;
         top.at = change.at;
 
-        if (!m_journal.isEmpty() && canCoalesce(m_journal.last(), change))
-            m_journal.last() = top;
-        else
-            m_journal.append(top);
+        if (!m_journal.isEmpty() && canCoalesce(m_journal.last(), change)) {
+            m_journal.last().afterBlock = change.afterBlock;
+            m_journal.last().afterTitle = change.afterTitle;
+            m_journal.last().at = change.at;
+        } else {
+            m_journal.append(change);
+        }
     } else {
         m_redoStack.clear();
-        m_undoStack.append(change);
+        m_undoStack.append({change});
         m_journal.append(change);
     }
 
+    m_lastChangeCoalescible = coalesce;
     m_sinceLastChange.restart();
     emit historyChanged();
     setDirty(true);
@@ -525,7 +595,8 @@ void DocumentSession::recordJournalOnly(const DocumentChange &change)
 
 bool DocumentSession::canCoalesce(const DocumentChange &previous, const DocumentChange &next) const
 {
-    if (previous.kind != next.kind || previous.blockId != next.blockId)
+    if (previous.kind != next.kind || previous.blockId != next.blockId
+        || previous.source != next.source)
         return false;
     return previous.kind == DocumentChange::Kind::Title
         || previous.kind == DocumentChange::Kind::UpdateBlock;

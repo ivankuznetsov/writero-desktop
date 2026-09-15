@@ -81,6 +81,105 @@ class TestReconciliation : public QObject
     Q_OBJECT
 
 private slots:
+    void replayRestoresMappedBlockMissingAfterFailedSave()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        const auto change = changeJson("block_create", blockJson("remote-new", "new from browser"),
+                                       1, "remote-new");
+        ChangeReconciler::applyChange(change, fixture.context());
+        const QString localId = fixture.workspace.store()->localIdForRemote(
+            fixture.documentId, QStringLiteral("remote-new"));
+        QVERIFY(!localId.isEmpty());
+        // Reopen the last durable document: reconciliation wrote the mapping,
+        // but its document save did not commit before the process stopped.
+        fixture.document.session().load(fixture.workspace.store()->loadDocument(fixture.documentId));
+        QVERIFY(!fixture.document.session().document().blockById(localId));
+        ChangeReconciler::applyChange(change, fixture.context());
+        const Block *restored = fixture.document.session().document().blockById(localId);
+        QVERIFY(restored);
+        QCOMPARE(restored->content, QStringLiteral("new from browser"));
+    }
+
+    void snapshotPreservesPendingEditWhenRemoteBlockWasDeleted()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        fixture.workspace.store()->mapBlock(fixture.documentId, fixture.firstBlockId, "42");
+        fixture.pending.insert(fixture.firstBlockId);
+        ChangeReconciler::applySnapshot({{"document", QJsonObject{{"title", "Reconcile"}}},
+                                         {"blocks", QJsonArray{}}}, fixture.context());
+        QVERIFY(fixture.document.session().document().blockById(fixture.firstBlockId));
+        QCOMPARE(fixture.conflicts.size(), 1);
+        QCOMPARE(fixture.conflicts.first().kind, QStringLiteral("block_destroy"));
+    }
+
+    void snapshotImportsEditorialResults()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        auto block = blockJson("42", "remote");
+        block.insert("id", 42);
+        const QJsonObject result{{"id", 7}, {"block_id", 42}, {"kind", "rewrite"},
+                                 {"status", "completed"},
+                                 {"attributes", QJsonObject{{"id", 7}, {"block_id", 42},
+                                     {"status", "completed"}, {"result_content", "rewritten"}}}};
+        ChangeReconciler::applySnapshot({{"document", QJsonObject{{"title", "Reconcile"}}},
+                                         {"blocks", QJsonArray{block}},
+                                         {"results", QJsonArray{result}}}, fixture.context());
+        const auto results = fixture.workspace.store()->aiResults(fixture.documentId);
+        QCOMPARE(results.size(), 1);
+        QCOMPARE(results.first().content, QStringLiteral("rewritten"));
+    }
+
+    void remoteMoveRefreshesLockVersionEvenIfPositionIsUnchanged()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        fixture.workspace.store()->mapBlock(fixture.documentId, fixture.firstBlockId, "42");
+        fixture.workspace.store()->setRemoteVersion(fixture.documentId, fixture.firstBlockId, 0);
+        const auto block = blockJson("42", "local content", 1, "text", 2);
+        ChangeReconciler::applyChange(changeJson("block_move", block, 3, "42"), fixture.context());
+        QCOMPARE(fixture.workspace.store()->remoteVersionForLocal(fixture.documentId,
+                                                                  fixture.firstBlockId), 2);
+    }
+
+    void editorialResultIdsAreScopedByResultKind()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        fixture.workspace.store()->mapBlock(fixture.documentId, fixture.firstBlockId, "42");
+        for (const QString &kind : {QStringLiteral("rewrite"), QStringLiteral("research")}) {
+            const QJsonObject result{{"id", 7}, {"block_id", 42}, {"status", "completed"},
+                                     {"result_content", kind}};
+            ChangeReconciler::applyChange({{"event", "result_" + kind + "_result"},
+                {"payload", QJsonObject{{"result", result}}}}, fixture.context());
+        }
+        QCOMPARE(fixture.workspace.store()->aiResults(fixture.documentId).size(), 2);
+    }
+
+    void remoteTitleRefreshesOptimisticVersion()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        ChangeReconciler::applyChange({{"event", "title_update"},
+            {"payload", QJsonObject{{"title", "Browser title"}, {"title_version", 5}}}},
+            fixture.context());
+        QCOMPARE(fixture.document.session().document().syncTitleVersion, 5);
+    }
+
+    void numericRemoteBlockEventsApply()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        fixture.workspace.store()->mapBlock(fixture.documentId, fixture.firstBlockId, "42");
+        auto block = blockJson("42", "numeric remote edit");
+        block.insert("id", 42);
+        ChangeReconciler::applyChange(changeJson("block_update", block, 3, "42"), fixture.context());
+        QCOMPARE(fixture.document.session().document().blockById(fixture.firstBlockId)->content,
+                 QStringLiteral("numeric remote edit"));
+    }
+
     void remoteUpdateAppliesWithoutDirtyingOrJournaling()
     {
         Fixture fixture;

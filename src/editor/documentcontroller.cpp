@@ -303,6 +303,8 @@ QString DocumentController::exportBundle(const QString &directory)
 {
     if (m_workspace == nullptr || !m_workspace->isReady())
         return {};
+    if (!saveIfDirty())
+        return {};
     const QUrl url(directory);
     const QString localPath = url.isLocalFile() ? url.toLocalFile() : directory;
     QString error;
@@ -361,13 +363,14 @@ bool DocumentController::pasteMarkdown(int index, const QString &markdown)
     current.type = first.type;
     current.content = first.content;
     current.metadata = first.metadata;
-    if (!m_session.updateBlock(index, current, QStringLiteral("paste")))
-        return false;
-
-    int at = index + 1;
-    for (const Block &block : parsed)
-        m_session.insertBlock(at++, block, QStringLiteral("paste"));
-    return true;
+    bool changed = false;
+    m_session.editGroup([&] {
+        changed = m_session.updateBlock(index, current, QStringLiteral("paste"));
+        int at = index + 1;
+        for (const Block &block : parsed)
+            changed = m_session.insertBlock(at++, block, QStringLiteral("paste")) || changed;
+    });
+    return changed;
 }
 
 QString DocumentController::clipboardText() const
@@ -597,18 +600,23 @@ int DocumentController::handleListEnter(int index, int cursorPosition)
         // Enter on an empty item exits the list.
         QString updated = content;
         updated.remove(lineStart, marker.size());
-        if (updated.trimmed().isEmpty())
-            m_session.updateType(index, BlockType::Text);
-        else
+        if (updated.trimmed().isEmpty()) {
+            Block textBlock = block;
+            textBlock.type = BlockType::Text;
+            textBlock.content.clear();
+            m_session.updateBlock(index, textBlock);
+        } else
             m_session.updateContent(index, updated);
         return lineStart;
     }
 
     const QString continuation = listcontent::continuationMarker(line);
+    // The marker belongs to the item; a cursor inside it must not split it.
+    const int split = qMax(cursor, lineStart + marker.size());
     QString updated = content;
-    updated.insert(cursor, QStringLiteral("\n") + continuation);
+    updated.insert(split, QStringLiteral("\n") + continuation);
     m_session.updateContent(index, updated);
-    return cursor + 1 + continuation.size();
+    return split + 1 + continuation.size();
 }
 
 int DocumentController::indentListItem(int index, int cursorPosition, bool outdent)
@@ -652,7 +660,7 @@ int DocumentController::indentListItem(int index, int cursorPosition, bool outde
     if (!m_session.updateContent(index, updated))
         return cursor;
     Q_UNUSED(lineEnd);
-    return cursor + delta;
+    return qMax(lineStart, cursor + delta);
 }
 
 QVariantMap DocumentController::applyFormat(int index, int selectionStart, int selectionEnd,

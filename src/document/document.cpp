@@ -75,10 +75,14 @@ void Document::ensureTrailingEmptyTextBlock()
 
 QString Document::textPreview(int maxLength) const
 {
+    if (maxLength <= 0)
+        return {};
     for (const Block &block : blocks) {
         if (block.content.isEmpty() || !blocktype::isTextual(block.type))
             continue;
         QString preview = block.content.simplified();
+        if (preview.isEmpty())
+            continue;
         if (preview.size() > maxLength)
             preview = preview.left(maxLength - 1) + QChar(0x2026);
         return preview;

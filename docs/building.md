@@ -15,21 +15,21 @@
 
 ```sh
 sudo pacman -S --needed base-devel cmake ninja qt6-base qt6-declarative \
-    qt6-svg libsecret sqlite
+    qt6-svg qt6-imageformats libsecret sqlite
 ```
 
 ### Fedora
 
 ```sh
 sudo dnf install cmake ninja-build gcc-c++ qt6-qtbase-devel \
-    qt6-qtdeclarative-devel qt6-qtsvg-devel libsecret-devel sqlite-devel
+    qt6-qtdeclarative-devel qt6-qtsvg-devel qt6-qtimageformats libsecret-devel sqlite-devel
 ```
 
 ### Debian / Ubuntu (24.04+)
 
 ```sh
 sudo apt install cmake ninja-build g++ qt6-base-dev qt6-declarative-dev \
-    qt6-svg-dev libsecret-1-dev libsqlite3-dev
+    qt6-svg-dev qt6-image-formats-plugins libsecret-1-dev libsqlite3-dev
 ```
 
 ## Configure and build

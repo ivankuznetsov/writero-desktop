@@ -9,6 +9,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRandomGenerator>
+#include <QSharedPointer>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QUrlQuery>
@@ -47,7 +48,7 @@ void AccountSession::setBaseUrl(const QString &baseUrl)
     if (m_baseUrl == normalized)
         return;
     m_baseUrl = normalized;
-    emit changed();
+    resetSessionState();
 }
 
 void AccountSession::setBusy(bool busy)
@@ -100,8 +101,16 @@ void AccountSession::startLoopback()
     }
     connect(m_loopback, &QTcpServer::newConnection, this, [this] {
         QTcpSocket *socket = m_loopback->nextPendingConnection();
-        connect(socket, &QTcpSocket::readyRead, this,
-                [this, socket] { handleCallbackRequest(socket, socket->readAll()); });
+        auto buffer = QSharedPointer<QByteArray>::create();
+        connect(socket, &QTcpSocket::readyRead, this, [this, socket, buffer] {
+            buffer->append(socket->readAll());
+            if (buffer->size() > 16384) {
+                socket->disconnectFromHost();
+                return;
+            }
+            if (buffer->contains("\r\n\r\n"))
+                handleCallbackRequest(socket, *buffer);
+        });
         connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
     });
 }
@@ -130,7 +139,11 @@ void AccountSession::handleCallbackRequest(QTcpSocket *socket, const QByteArray 
     const QString state = query.queryItemValue(QStringLiteral("state"));
     const QString error = query.queryItemValue(QStringLiteral("error"));
 
-    const QByteArray body = error.isEmpty()
+    const bool valid = requestLine.value(0) == "GET"
+        && url.path() == QLatin1String("/callback")
+        && !m_pendingState.isEmpty() && state == m_pendingState
+        && (!code.isEmpty() || !error.isEmpty());
+    const QByteArray body = valid && error.isEmpty()
         ? QByteArrayLiteral("<html><body><h3>Writero is connected.</h3>"
                             "<p>You can close this window and return to the app.</p></body></html>")
         : QByteArrayLiteral("<html><body><h3>Writero sign-in failed.</h3>"
@@ -141,7 +154,11 @@ void AccountSession::handleCallbackRequest(QTcpSocket *socket, const QByteArray 
     socket->flush();
     socket->disconnectFromHost();
 
+    if (!valid)
+        return;
     if (!error.isEmpty()) {
+        m_pendingState.clear();
+        m_pendingVerifier.clear();
         setError(QStringLiteral("Authorization was denied: %1").arg(error));
         stopLoopback();
         setBusy(false);
@@ -155,13 +172,17 @@ void AccountSession::signIn()
 {
     if (m_busy)
         return;
+    ++m_generation;
     setBusy(true);
     setError({});
     m_pendingVerifier = makeVerifier();
     m_pendingState = newId();
     startLoopback();
-    if (m_loopback == nullptr)
+    if (m_loopback == nullptr) {
+        setBusy(false);
+        emit signInFinished(false);
         return;
+    }
     m_pendingRedirectUri = redirectUri();
 
     QJsonObject registration;
@@ -174,7 +195,12 @@ void AccountSession::signIn()
     QNetworkReply *reply = m_network->post(
         request, QJsonDocument(registration).toJson(QJsonDocument::Compact));
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    const quint64 generation = m_generation;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation] {
+        if (generation != m_generation) {
+            reply->deleteLater();
+            return;
+        }
         const QByteArray body = reply->readAll();
         const bool ok = reply->error() == QNetworkReply::NoError;
         reply->deleteLater();
@@ -221,8 +247,13 @@ bool AccountSession::completeAuthorization(const QString &code, const QString &s
         emit signInFinished(false);
         return false;
     }
+    if (code.isEmpty())
+        return false;
+    const QString verifier = m_pendingVerifier;
+    m_pendingState.clear();
+    m_pendingVerifier.clear();
     stopLoopback();
-    exchangeCode(code, m_pendingVerifier);
+    exchangeCode(code, verifier);
     return true;
 }
 
@@ -240,7 +271,12 @@ void AccountSession::exchangeCode(const QString &code, const QString &codeVerifi
     QNetworkReply *reply = m_network->post(request,
                                            QJsonDocument(body).toJson(QJsonDocument::Compact));
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    const quint64 generation = m_generation;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation] {
+        if (generation != m_generation) {
+            reply->deleteLater();
+            return;
+        }
         const QByteArray body = reply->readAll();
         const bool ok = reply->error() == QNetworkReply::NoError;
         reply->deleteLater();
@@ -273,6 +309,7 @@ bool AccountSession::importToken(const QString &baseUrl, const QString &token)
     if (token.isEmpty())
         return false;
     setBaseUrl(baseUrl);
+    resetSessionState();
     storeToken(token);
     setBusy(true);
     setError({});
@@ -312,15 +349,19 @@ void AccountSession::fetchCapabilities()
     request.setRawHeader("Authorization", bearerHeader(token).toUtf8());
     QNetworkReply *reply = m_network->get(request);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    const quint64 generation = m_generation;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation] {
+        if (generation != m_generation) {
+            reply->deleteLater();
+            return;
+        }
         const QByteArray body = reply->readAll();
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const bool ok = reply->error() == QNetworkReply::NoError;
         reply->deleteLater();
 
         if (status == 401) {
-            m_credentials.remove(QString::fromLatin1(TokenKey));
-            m_connected = false;
+            clearLocalSession();
             setError(QStringLiteral("The session expired. Sign in again."));
             setBusy(false);
             emit signInFinished(false);
@@ -334,7 +375,13 @@ void AccountSession::fetchCapabilities()
             return;
         }
 
-        applyCapabilities(body);
+        if (!applyCapabilities(body)) {
+            const QString error = m_lastError;
+            resetSessionState();
+            setError(error);
+            emit signInFinished(false);
+            return;
+        }
         m_connected = true;
         setError({});
         setBusy(false);
@@ -342,9 +389,15 @@ void AccountSession::fetchCapabilities()
     });
 }
 
-void AccountSession::applyCapabilities(const QByteArray &body)
+bool AccountSession::applyCapabilities(const QByteArray &body)
 {
-    const QJsonObject root = QJsonDocument::fromJson(body).object();
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        setError(QStringLiteral("The server returned invalid account capabilities."));
+        return false;
+    }
+    const QJsonObject root = document.object();
     const int version = root.value(QStringLiteral("protocol"))
                             .toObject()
                             .value(QStringLiteral("version"))
@@ -353,6 +406,7 @@ void AccountSession::applyCapabilities(const QByteArray &body)
     if (version != 1) {
         setError(QStringLiteral("This app version does not support the server protocol (v%1).")
                      .arg(version));
+        return false;
     }
 
     m_accountEmail = root.value(QStringLiteral("account"))
@@ -379,19 +433,30 @@ void AccountSession::applyCapabilities(const QByteArray &body)
     m_entitlements.clear();
     for (const QJsonValue &value : root.value(QStringLiteral("entitlements")).toArray())
         m_entitlements.append(value.toString());
+    return true;
 }
 
 void AccountSession::storeToken(const QString &token)
 {
     QString error;
-    m_credentials.store(QString::fromLatin1(TokenKey), token, &error);
+    m_credentials.store(tokenKey(), token, &error);
     if (!error.isEmpty())
         setError(error);
 }
 
+QString AccountSession::tokenKey() const
+{
+    // Existing production credentials belong only to the production origin.
+    if (m_baseUrl == QLatin1String("https://writero.app"))
+        return QString::fromLatin1(TokenKey);
+    return QString::fromLatin1(TokenKey) + QLatin1Char('.')
+        + QString::fromLatin1(QCryptographicHash::hash(m_baseUrl.toUtf8(),
+                                                      QCryptographicHash::Sha256).toHex());
+}
+
 QString AccountSession::storedToken() const
 {
-    return m_credentials.load(QString::fromLatin1(TokenKey));
+    return m_credentials.load(tokenKey());
 }
 
 QString AccountSession::accessToken() const
@@ -401,7 +466,13 @@ QString AccountSession::accessToken() const
 
 void AccountSession::clearLocalSession()
 {
-    m_credentials.remove(QString::fromLatin1(TokenKey));
+    m_credentials.remove(tokenKey());
+    resetSessionState();
+}
+
+void AccountSession::resetSessionState()
+{
+    ++m_generation;
     stopLoopback();
     m_connected = false;
     m_accountEmail.clear();
@@ -410,6 +481,10 @@ void AccountSession::clearLocalSession()
     m_hostedAiEnabled = false;
     m_remainingCreditUsd = 0.0;
     m_entitlements.clear();
+    m_hostedModels.clear();
+    m_hostedImageModels.clear();
+    m_hostedExplanationModels.clear();
+    m_lastError.clear();
     m_protocolVersion = 0;
     m_pendingState.clear();
     m_pendingVerifier.clear();
@@ -420,38 +495,16 @@ void AccountSession::clearLocalSession()
 
 void AccountSession::signOut()
 {
-    setBusy(true);
     const QString token = storedToken();
-    m_credentials.remove(QString::fromLatin1(TokenKey));
-
-    if (token.isEmpty()) {
-        m_connected = false;
-        setBusy(false);
-        emit changed();
+    const QUrl revokeUrl(m_baseUrl + QStringLiteral("/api/v1/auth/token"));
+    clearLocalSession();
+    if (token.isEmpty())
         return;
-    }
 
-    QNetworkRequest request(QUrl(m_baseUrl + QStringLiteral("/api/v1/auth/token")));
+    QNetworkRequest request(revokeUrl);
     request.setRawHeader("Authorization", bearerHeader(token).toUtf8());
     QNetworkReply *reply = m_network->deleteResource(request);
-
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
-        reply->deleteLater();
-        m_connected = false;
-        m_accountEmail.clear();
-        m_plan.clear();
-        m_subscriptionActive = false;
-        m_hostedAiEnabled = false;
-        m_remainingCreditUsd = 0.0;
-        m_entitlements.clear();
-        m_hostedModels.clear();
-        m_hostedImageModels.clear();
-        m_hostedExplanationModels.clear();
-        m_protocolVersion = 0;
-        setError({});
-        setBusy(false);
-        emit changed();
-    });
+    connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
 }
 
 } // namespace writero

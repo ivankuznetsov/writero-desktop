@@ -10,7 +10,10 @@
 #include <QPdfWriter>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
+#include <QStringConverter>
 #include <QTextDocument>
+#include <QUrl>
 
 #include "markdown/markdown.h"
 
@@ -163,18 +166,25 @@ bool exportHtml(const Document &document, const QString &path, const MediaAccess
 bool exportPdf(const Document &document, const QString &path, const MediaAccess &access,
                QString *error)
 {
-    QPdfWriter writer(path);
-    writer.setPageSize(QPageSize(QPageSize::A4));
-    writer.setPageMargins(QMarginsF(15, 15, 15, 15), QPageLayout::Millimeter);
-    writer.setTitle(document.title);
-
-    QTextDocument textDocument;
-    textDocument.setHtml(htmlDocument(document, access));
-    textDocument.print(&writer);
-
-    if (!QFileInfo::exists(path)) {
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
         if (error)
-            *error = QStringLiteral("PDF export failed");
+            *error = QStringLiteral("PDF export failed: %1").arg(file.errorString());
+        return false;
+    }
+    {
+        QPdfWriter writer(&file);
+        writer.setPageSize(QPageSize(QPageSize::A4));
+        writer.setPageMargins(QMarginsF(15, 15, 15, 15), QPageLayout::Millimeter);
+        writer.setTitle(document.title);
+
+        QTextDocument textDocument;
+        textDocument.setHtml(htmlDocument(document, access));
+        textDocument.print(&writer);
+    }
+    if (file.error() != QFileDevice::NoError || !file.commit()) {
+        if (error)
+            *error = QStringLiteral("PDF export failed: %1").arg(file.errorString());
         return false;
     }
     return true;
@@ -188,11 +198,37 @@ BlockList importMarkdownFile(const QString &path, QString *error)
             *error = QStringLiteral("Cannot read %1: %2").arg(path, file.errorString());
         return {};
     }
-    return markdown::parse(QString::fromUtf8(file.readAll()));
+    const QByteArray bytes = file.readAll();
+    QStringDecoder decoder(QStringDecoder::Utf8, QStringConverter::Flag::Stateless);
+    const QString text = decoder.decode(bytes);
+    if (file.error() != QFileDevice::NoError || decoder.hasError()) {
+        if (error)
+            *error = QStringLiteral("Cannot read %1 as UTF-8 Markdown").arg(path);
+        return {};
+    }
+    BlockList blocks = markdown::parse(text);
+    const QUrl base = QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath());
+    for (Block &block : blocks) {
+        if (block.type == BlockType::Media && !block.mediaSource().isEmpty())
+            block.setMediaSource(base.resolved(QUrl(block.mediaSource())).toString());
+    }
+    return blocks;
 }
 
 bool exportBundle(const QString &directory, const BundleContents &contents, QString *error)
 {
+    static const QRegularExpression shaPattern(QStringLiteral("^[0-9a-f]{64}$"));
+    for (const auto &media : contents.media) {
+        if (!shaPattern.match(media.sha256).hasMatch()
+            || media.byteSize != media.data.size()
+            || QString::fromLatin1(QCryptographicHash::hash(media.data, QCryptographicHash::Sha256)
+                                      .toHex()) != media.sha256) {
+            if (error)
+                *error = QStringLiteral("Bundle media has invalid content or hash");
+            return false;
+        }
+    }
+
     QDir dir(directory);
     if (!dir.mkpath(QStringLiteral(".")) || !dir.mkpath(QStringLiteral("media"))) {
         if (error)
@@ -241,15 +277,13 @@ bool exportBundle(const QString &directory, const BundleContents &contents, QStr
         object.insert(QStringLiteral("byte_size"), media.byteSize);
         mediaJson.append(object);
 
-        if (!media.data.isEmpty()) {
-            const QString mediaPath = dir.filePath(QStringLiteral("media/%1").arg(media.sha256));
-            QSaveFile file(mediaPath);
-            if (!file.open(QIODevice::WriteOnly) || file.write(media.data) != media.data.size()
-                || !file.commit()) {
-                if (error)
-                    *error = QStringLiteral("Cannot write bundle media %1").arg(media.sha256);
-                return false;
-            }
+        const QString mediaPath = dir.filePath(QStringLiteral("media/%1").arg(media.sha256));
+        QSaveFile file(mediaPath);
+        if (!file.open(QIODevice::WriteOnly) || file.write(media.data) != media.data.size()
+            || !file.commit()) {
+            if (error)
+                *error = QStringLiteral("Cannot write bundle media %1").arg(media.sha256);
+            return false;
         }
     }
     root.insert(QStringLiteral("media"), mediaJson);
@@ -286,36 +320,62 @@ bool importBundle(const QString &directory, BundleContents *contents, QString *e
     }
 
     const QJsonObject root = json.object();
+    const auto reject = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (root.value(QStringLiteral("version")).toDouble(-1) != 1)
+        return reject(QStringLiteral("Unsupported bundle version"));
+    if (!root.value(QStringLiteral("document")).isObject()
+        || !root.value(QStringLiteral("blocks")).isArray()
+        || !root.value(QStringLiteral("revisions")).isArray()
+        || !root.value(QStringLiteral("media")).isArray())
+        return reject(QStringLiteral("Bundle manifest has invalid structure"));
+
+    // Publish parsed data only after every referenced file has been validated.
+    BundleContents parsed;
     const QJsonObject documentJson = root.value(QStringLiteral("document")).toObject();
-    contents->document = Document();
-    contents->document.id = newId();
-    contents->document.title = documentJson.value(QStringLiteral("title")).toString();
-    contents->document.createdAt =
+    parsed.document.id = newId();
+    parsed.document.title = documentJson.value(QStringLiteral("title")).toString();
+    parsed.document.createdAt =
         QDateTime::fromString(documentJson.value(QStringLiteral("created_at")).toString(),
                               Qt::ISODateWithMs);
-    contents->document.updatedAt =
+    parsed.document.updatedAt =
         QDateTime::fromString(documentJson.value(QStringLiteral("updated_at")).toString(),
                               Qt::ISODateWithMs);
-    contents->revisions.clear();
-    contents->media.clear();
-    contents->mediaShaByBlock.clear();
 
+    QSet<QString> blockIds;
     const auto blocks = root.value(QStringLiteral("blocks")).toArray();
     for (const QJsonValue &value : blocks) {
         const QJsonObject object = value.toObject();
+        bool knownType = false;
+        blocktype::fromKey(object.value(QStringLiteral("type")).toString(), &knownType);
+        const QString id = object.value(QStringLiteral("id")).toString();
+        if (!value.isObject() || id.isEmpty() || blockIds.contains(id) || !knownType
+            || !object.value(QStringLiteral("content")).isString()
+            || !object.value(QStringLiteral("metadata")).isObject())
+            return reject(QStringLiteral("Bundle has an invalid or duplicate block"));
+        blockIds.insert(id);
         QVariantMap map = object.toVariantMap();
         QJsonObject metadata = object.value(QStringLiteral("metadata")).toObject();
         map.insert(QStringLiteral("metadata"), metadata.toVariantMap());
         const QString mediaSha = object.value(QStringLiteral("media_sha")).toString();
         Block block = Block::fromJson(map);
         if (!mediaSha.isEmpty())
-            contents->mediaShaByBlock.insert(block.id, mediaSha);
-        contents->document.blocks.append(block);
+            parsed.mediaShaByBlock.insert(block.id, mediaSha);
+        parsed.document.blocks.append(block);
     }
 
     const auto revisions = root.value(QStringLiteral("revisions")).toArray();
     for (const QJsonValue &value : revisions) {
         const QJsonObject object = value.toObject();
+        bool knownType = false;
+        blocktype::fromKey(object.value(QStringLiteral("type")).toString(), &knownType);
+        if (!value.isObject() || !knownType
+            || !object.value(QStringLiteral("metadata")).isObject()
+            || !object.value(QStringLiteral("content")).isString())
+            return reject(QStringLiteral("Bundle has an invalid revision"));
         Revision revision;
         revision.blockId = object.value(QStringLiteral("block_id")).toString();
         revision.event = object.value(QStringLiteral("event")).toString();
@@ -326,10 +386,11 @@ bool importBundle(const QString &directory, BundleContents *contents, QString *e
         revision.createdAt =
             QDateTime::fromString(object.value(QStringLiteral("created_at")).toString(),
                                   Qt::ISODateWithMs);
-        contents->revisions.append(revision);
+        parsed.revisions.append(revision);
     }
 
     static const QRegularExpression shaPattern(QStringLiteral("^[0-9a-f]{64}$"));
+    QSet<QString> mediaHashes;
     const auto media = root.value(QStringLiteral("media")).toArray();
     for (const QJsonValue &value : media) {
         const QJsonObject object = value.toObject();
@@ -342,7 +403,10 @@ bool importBundle(const QString &directory, BundleContents *contents, QString *e
         }
         file.filename = object.value(QStringLiteral("filename")).toString();
         file.mimeType = object.value(QStringLiteral("mime_type")).toString();
-        file.byteSize = qint64(object.value(QStringLiteral("byte_size")).toDouble());
+        const double declaredSize = object.value(QStringLiteral("byte_size")).toDouble(-1);
+        if (declaredSize < 0 || declaredSize > MaxMediaBytes)
+            return reject(QStringLiteral("Bundle media has invalid size"));
+        file.byteSize = qint64(declaredSize);
 
         const QString mediaPath = dir.filePath(QStringLiteral("media/%1").arg(file.sha256));
         QFile mediaFile(mediaPath);
@@ -365,8 +429,18 @@ bool importBundle(const QString &directory, BundleContents *contents, QString *e
                              .arg(file.sha256);
             return false;
         }
-        contents->media.append(file);
+        if (object.value(QStringLiteral("byte_size")).toDouble(-1) != file.data.size()
+            || mediaHashes.contains(file.sha256))
+            return reject(QStringLiteral("Bundle media has invalid size or duplicate hash"));
+        mediaHashes.insert(file.sha256);
+        parsed.media.append(file);
     }
+
+    for (const QString &sha : parsed.mediaShaByBlock) {
+        if (!mediaHashes.contains(sha))
+            return reject(QStringLiteral("Bundle references missing media"));
+    }
+    *contents = std::move(parsed);
 
     return true;
 }

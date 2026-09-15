@@ -42,7 +42,17 @@ Drawer {
         return entries
     }
 
+    function updateProviders() {
+        const selected = providerId
+        const entries = buildProviders()
+        providerBox.model = entries
+        const index = entries.findIndex(entry => entry.id === selected)
+        providerBox.currentIndex = index >= 0 ? index : (entries.length > 0 ? 0 : -1)
+        updateModels()
+    }
+
     function updateModels() {
+        const selected = modelBox.currentValue
         capabilityMessage = ""
         if (!providers || providerId === "") {
             availableModels = []
@@ -54,17 +64,20 @@ Drawer {
                 : aiPanel.operation === "explain"
                   ? aiPanel.ai.account.hostedExplanationModels
                   : aiPanel.ai.account.hostedModels
-            availableModels = []
+            const entries = []
             for (let i = 0; i < hosted.length; ++i)
-                availableModels.push({ id: hosted[i], name: hosted[i] })
-            modelBox.currentIndex = availableModels.length > 0 ? 0 : -1
+                entries.push({ id: hosted[i], name: hosted[i] })
+            availableModels = entries
+            const previousIndex = entries.findIndex(entry => entry.id === selected)
+            modelBox.currentIndex = previousIndex >= 0 ? previousIndex : (entries.length > 0 ? 0 : -1)
             if (availableModels.length === 0)
                 capabilityMessage = qsTr("No hosted models are available for this operation.")
             referenceCheck.checked = false
             return
         }
         availableModels = providers.modelsFor(providerId, operation)
-        modelBox.currentIndex = availableModels.length > 0 ? 0 : -1
+        const previousIndex = availableModels.findIndex(entry => entry.id === selected)
+        modelBox.currentIndex = previousIndex >= 0 ? previousIndex : (availableModels.length > 0 ? 0 : -1)
         if (providers.modelsLoading(providerId)) {
             capabilityMessage = qsTr("Loading models\u2026")
         } else if (!providers.hasModels(providerId)) {
@@ -123,6 +136,8 @@ Drawer {
     }
 
     onOperationIndexChanged: updateModels()
+    onProvidersChanged: updateProviders()
+    Component.onCompleted: updateProviders()
 
     background: Rectangle {
         color: Theme.surface
@@ -131,15 +146,24 @@ Drawer {
 
     Connections {
         target: aiPanel.providers
-        function onModelsChanged(id) { aiPanel.updateModels() }
+        function onChanged() { aiPanel.updateProviders() }
+        function onModelsChanged(id) {
+            if (id === aiPanel.providerId)
+                aiPanel.updateModels()
+        }
         function onModelsFailed(id, error) {
             aiPanel.capabilityMessage = error
         }
     }
 
     Connections {
+        target: aiPanel.ai
+        function onChanged() { aiPanel.updateProviders() }
+    }
+
+    Connections {
         target: aiPanel.ai ? aiPanel.ai.account : null
-        function onChanged() { aiPanel.updateModels() }
+        function onChanged() { aiPanel.updateProviders() }
     }
 
     ColumnLayout {
@@ -159,9 +183,9 @@ Drawer {
             Layout.fillWidth: true
             textRole: "name"
             valueRole: "id"
-            model: aiPanel.buildProviders()
+            model: []
             displayText: currentIndex >= 0 ? currentText : qsTr("No provider configured")
-            onCurrentIndexChanged: aiPanel.updateModels()
+            onCurrentValueChanged: Qt.callLater(aiPanel.updateModels)
         }
 
         RowLayout {
@@ -355,7 +379,7 @@ Drawer {
                             if (modelData.kind === "image_generation")
                                 return qsTr("[generated image]")
                             const content = modelData.content || ""
-                            return content.length > 220 ? content.left(219) + "\u2026" : content
+                            return content.length > 220 ? content.slice(0, 219) + "\u2026" : content
                         }
                         wrapMode: Text.Wrap
                         color: Theme.text
