@@ -81,6 +81,26 @@ class TestReconciliation : public QObject
     Q_OBJECT
 
 private slots:
+    void replayRestoresMappedBlockMissingAfterFailedSave()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        const auto change = changeJson("block_create", blockJson("remote-new", "new from browser"),
+                                       1, "remote-new");
+        ChangeReconciler::applyChange(change, fixture.context());
+        const QString localId = fixture.workspace.store()->localIdForRemote(
+            fixture.documentId, QStringLiteral("remote-new"));
+        QVERIFY(!localId.isEmpty());
+        // Reopen the last durable document: reconciliation wrote the mapping,
+        // but its document save did not commit before the process stopped.
+        fixture.document.session().load(fixture.workspace.store()->loadDocument(fixture.documentId));
+        QVERIFY(!fixture.document.session().document().blockById(localId));
+        ChangeReconciler::applyChange(change, fixture.context());
+        const Block *restored = fixture.document.session().document().blockById(localId);
+        QVERIFY(restored);
+        QCOMPARE(restored->content, QStringLiteral("new from browser"));
+    }
+
     void snapshotPreservesPendingEditWhenRemoteBlockWasDeleted()
     {
         Fixture fixture;

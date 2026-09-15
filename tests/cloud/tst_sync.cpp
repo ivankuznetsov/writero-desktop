@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSharedPointer>
+#include <QSqlQuery>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -609,6 +610,44 @@ private slots:
                  QStringLiteral("typing during network request"));
         QCOMPARE(fixture.engine.conflictCount(), 1);
         QCOMPARE(cloud->blocks.first().content, QStringLiteral("browser edit"));
+    }
+
+    void failedSnapshotSaveDoesNotAdvanceDurableCursor()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.setUp());
+        QTRY_VERIFY(fixture.account.isConnected());
+        fixture.engine.connectDocument();
+        QTRY_COMPARE(fixture.engine.state(), QStringLiteral("synced"));
+        const QString documentId = fixture.document.documentId();
+        const Document before = fixture.workspace.store()->loadDocument(documentId);
+        auto *cloud = fixture.api.document(fixture.engine.cloudId());
+        cloud->blocks.first().content = QStringLiteral("snapshot must survive reopen");
+        ++cloud->sequence;
+        fixture.api.setCursorExpired(true);
+
+        const QString connection = newId();
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+            db.setDatabaseName(fixture.dir.filePath(QStringLiteral("workspace.db")));
+            QVERIFY(db.open());
+            QSqlQuery query(db);
+            QVERIFY(query.exec(QStringLiteral("CREATE TRIGGER reject_snapshot BEFORE INSERT ON blocks "
+                                               "BEGIN SELECT RAISE(ABORT, 'injected disk failure'); END")));
+            fixture.engine.syncNow();
+            QTRY_VERIFY(!fixture.engine.busy());
+            const Document persisted = fixture.workspace.store()->loadDocument(documentId);
+            QCOMPARE(persisted.syncCursor, before.syncCursor);
+            QCOMPARE(persisted.blocks.first().content, before.blocks.first().content);
+            QCOMPARE(fixture.engine.state(), QStringLiteral("error"));
+            QCOMPARE(fixture.document.session().document().syncCursor, before.syncCursor);
+            QVERIFY(query.exec(QStringLiteral("DROP TRIGGER reject_snapshot")));
+            fixture.engine.syncNow();
+            QTRY_COMPARE(fixture.engine.state(), QStringLiteral("synced"));
+            QCOMPARE(fixture.workspace.store()->loadDocument(documentId).blocks.first().content,
+                     cloud->blocks.first().content);
+        }
+        QSqlDatabase::removeDatabase(connection);
     }
 
     void switchingDocumentsIgnoresOutstandingCreateResponse()

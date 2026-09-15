@@ -734,6 +734,7 @@ void SyncEngine::onSnapshotReceived(const QJsonObject &body)
         return;
     }
     const ReconcileContext context = reconcileContext();
+    const Document previous = m_document->session().document();
     ChangeReconciler::applySnapshot(combined, context);
 
     const QJsonObject watermark = body.value(QStringLiteral("watermark")).toObject();
@@ -759,9 +760,17 @@ void SyncEngine::onSnapshotReceived(const QJsonObject &body)
     m_document->session().setCloudState(m_cloudId, QStringLiteral("connected"), cursor, generation,
                                         titleVersion,
                                         m_account ? m_account->accountEmail() : QString());
-    m_workspace->store()->updateDocumentSync(m_document->documentId(), m_cloudId,
-                                             QStringLiteral("connected"), cursor, generation);
-    m_workspace->store()->saveDocument(m_document->session().document(), {}, {});
+    QString saveError;
+    if (!m_workspace->store()->saveDocument(m_document->session().document(), {}, {}, &saveError)) {
+        m_document->session().setCloudState(previous.cloudId, previous.cloudState,
+            previous.syncCursor, previous.feedGeneration, previous.syncTitleVersion,
+            previous.syncAccountEmail);
+        setError(saveError);
+        setState(QStringLiteral("error"));
+        setBusy(false);
+        m_stage = Stage::Idle;
+        return;
+    }
     refreshSummary();
 
     if (m_workspace->store()->conflictCount(m_document->documentId()) == 0

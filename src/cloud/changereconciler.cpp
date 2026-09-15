@@ -233,8 +233,12 @@ void ChangeReconciler::applyChange(const QJsonObject &change, const ReconcileCon
         const QString localId = context.store->localIdForRemote(context.documentId, remoteId);
         const QJsonObject mediaJson = blockJson.value(QStringLiteral("media")).toObject();
 
-        if (localId.isEmpty()) {
-            Block block = blockFromJson(blockJson, newId());
+        if (localId.isEmpty()
+            || (!context.session->document().blockById(localId)
+                && !context.pendingBlockIds.contains(localId))) {
+            // A previous pull may have persisted its mapping before the
+            // document save failed. Replay must restore that same identity.
+            Block block = blockFromJson(blockJson, localId.isEmpty() ? newId() : localId);
             context.store->mapBlock(context.documentId, block.id, remoteId);
             const int index = qMax(0, blockJson.value(QStringLiteral("position")).toInt() - 1);
             context.session->applyRemoteInsert(block, index);
