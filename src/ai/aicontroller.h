@@ -2,6 +2,7 @@
 
 #include <QHash>
 #include <QObject>
+#include <QPointer>
 #include <QQmlEngine>
 
 #include "ai/providerregistry.h"
@@ -96,6 +97,7 @@ private:
                      textactions::Operation operation, const QString &instruction);
     void settleResult(const QString &resultId, const QString &status, const QString &content,
                       const QString &error);
+    void cancelOperations();
     void operationStarted();
     void operationFinished();
     void appendStreaming(const QString &delta);
@@ -103,12 +105,13 @@ private:
                  const QString &instruction);
     const Block *blockById(const QString &blockId) const;
 
-    Workspace *m_workspace = nullptr;
-    ProviderRegistry *m_providers = nullptr;
-    DocumentController *m_document = nullptr;
-    AccountSession *m_account = nullptr;
+    QPointer<Workspace> m_workspace;
+    QPointer<ProviderRegistry> m_providers;
+    QPointer<DocumentController> m_document;
+    QPointer<AccountSession> m_account;
     WriteroProvider *m_hosted = nullptr;
     QHash<QString, QString> m_hostedResultIds;
+    QSet<QString> m_pendingResultIds;
 
     struct HostedUpload
     {
@@ -116,6 +119,7 @@ private:
         QString kind;
         QString model;
         QString prompt;
+        QString articleTitle;
         bool reference = false;
     };
     QHash<QString, HostedUpload> m_hostedUploads;

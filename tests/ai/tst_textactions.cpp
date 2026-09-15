@@ -62,6 +62,22 @@ private slots:
         QVERIFY(messages.first().content.contains(QStringLiteral("bullet list")));
     }
 
+    void bulkRewriteRequestsStructuredBlockChanges()
+    {
+        const auto messages = textactions::buildBulkMessages(textactions::Operation::Rewrite,
+            sampleDocument(), QStringLiteral("shorten"));
+        QVERIFY(messages.first().content.contains(QStringLiteral("JSON array")));
+        QVERIFY(!messages.first().content.contains(QStringLiteral("single block")));
+    }
+
+    void humanizeRetainsAdditionalInstructions()
+    {
+        const auto doc = sampleDocument();
+        const auto messages = textactions::buildMessages(textactions::Operation::Rewrite,
+            doc, doc.blocks.at(1), QStringLiteral("Humanize and translate to French"));
+        QVERIFY(messages.last().content.contains(QStringLiteral("translate to French")));
+    }
+
     void bulkMessagesEncodeBlockIds()
     {
         const Document document = sampleDocument();

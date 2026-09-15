@@ -95,6 +95,12 @@ ModelCatalog::ModelCatalog(QObject *parent)
 
 void ModelCatalog::fetch(const ProviderProfile &profile, const QString &apiKey)
 {
+    if (m_reply) {
+        disconnect(m_reply, nullptr, this, nullptr);
+        m_reply->abort();
+        m_reply->deleteLater();
+        m_reply = nullptr;
+    }
     m_models.clear();
     m_error.clear();
 
@@ -113,10 +119,11 @@ void ModelCatalog::fetch(const ProviderProfile &profile, const QString &apiKey)
     }
 
     m_reply = m_network->get(request);
-    connect(m_reply, &QNetworkReply::finished, this, [this, profile] {
-        const QNetworkReply::NetworkError error = m_reply->error();
-        const QByteArray body = m_reply->readAll();
-        m_reply->deleteLater();
+    QNetworkReply *reply = m_reply;
+    connect(reply, &QNetworkReply::finished, this, [this, profile, reply] {
+        const QNetworkReply::NetworkError error = reply->error();
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
         m_reply = nullptr;
 
         if (error != QNetworkReply::NoError) {
@@ -174,8 +181,8 @@ QVector<ModelCapabilities> ModelCatalog::parse(ProviderType type, const QByteArr
         } else {
             const ModelCapabilities inferred = inferModel(id, type);
             // Some compatible endpoints do report OpenRouter-style modalities.
-            const QJsonObject architecture = object.value(QStringLiteral("architecture")).toObject();
-            models.append(architecture.isEmpty() ? inferred : fromOpenRouterObject(object));
+            const ModelCapabilities reported = fromOpenRouterObject(object);
+            models.append(reported.modalitiesKnown ? reported : inferred);
         }
     }
     return models;

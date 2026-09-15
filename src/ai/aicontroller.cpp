@@ -41,7 +41,16 @@ void AiController::setWorkspace(Workspace *workspace)
 {
     if (m_workspace == workspace)
         return;
+    cancelOperations();
+    if (m_workspace)
+        disconnect(m_workspace, nullptr, this, nullptr);
     m_workspace = workspace;
+    if (m_workspace) {
+        connect(m_workspace, &QObject::destroyed, this, [this] {
+            cancelOperations();
+            refreshResults();
+        });
+    }
     m_resultRecords.clear();
     m_results.clear();
     emit resultsChanged();
@@ -60,14 +69,18 @@ void AiController::setDocument(DocumentController *document)
 {
     if (m_document == document)
         return;
+    if (m_document)
+        disconnect(m_document, nullptr, this, nullptr);
     m_document = document;
     if (m_document) {
         connect(m_document, &DocumentController::loaded, this, [this] {
-            m_currentBlock = -1;
+            setCurrentBlock(-1);
             refreshResults();
         });
         connect(m_document, &DocumentController::saved, this, &AiController::refreshResults);
     }
+    setCurrentBlock(-1);
+    refreshResults();
     emit changed();
 }
 
@@ -78,6 +91,15 @@ void AiController::setAccount(AccountSession *account)
     m_account = account;
 
     if (m_hosted) {
+        disconnect(m_hosted, nullptr, this, nullptr);
+        const auto resultIds = m_hostedResultIds.values();
+        m_hostedResultIds.clear();
+        m_hostedUploads.clear();
+        for (const QString &resultId : resultIds) {
+            settleResult(resultId, QStringLiteral("failed"), {},
+                         QStringLiteral("Account changed while the operation was running."));
+            operationFinished();
+        }
         m_hosted->deleteLater();
         m_hosted = nullptr;
     }
@@ -149,7 +171,7 @@ void AiController::setAccount(AccountSession *account)
                     HostedContext context;
                     context.content = QString();
                     context.blockType = QStringLiteral("media");
-                    context.articleTitle = m_document->session().document().title;
+                    context.articleTitle = upload.articleTitle;
                     if (upload.reference) {
                         m_hosted->submit(upload.operationId, upload.kind, upload.model,
                                          upload.prompt, context, signedId, {});
@@ -216,6 +238,8 @@ QString AiController::runHostedRewrite(int index, const QString &blockId,
         const WorkspaceStore::AiResultRecord record = createResult(
             blockId, QStringLiteral("rewrite"), QStringLiteral("writero"), model, prompt, {},
             operationId);
+        if (record.id.isEmpty())
+            break;
         WorkspaceStore::AiResultRecord processing = record;
         processing.status = QStringLiteral("processing");
         m_workspace->store()->saveAiResult(processing);
@@ -247,14 +271,17 @@ QString AiController::runHostedImage(int index, const QString &kind, const QStri
     if (!block)
         return {};
 
-    if (kind == QLatin1String("image_explanation") && block->mediaId <= 0) {
-        emit notice(QStringLiteral("Image explanation needs an attached image."));
+    if ((kind == QLatin1String("image_explanation") || useCurrentAsReference)
+        && block->mediaId <= 0) {
+        emit notice(QStringLiteral("This operation needs an attached image."));
         return {};
     }
 
     const QString operationId = newId();
     const WorkspaceStore::AiResultRecord record = createResult(
         block->id, kind, providerId, model, prompt, {}, operationId);
+    if (record.id.isEmpty())
+        return {};
     WorkspaceStore::AiResultRecord processing = record;
     processing.status = QStringLiteral("processing");
     m_workspace->store()->saveAiResult(processing);
@@ -295,6 +322,7 @@ void AiController::submitHostedImage(const QString &operationId, const QString &
         upload.model = model;
         upload.prompt = prompt;
         upload.reference = kind == QLatin1String("image_generation");
+        upload.articleTitle = context.articleTitle;
         m_hostedUploads.insert(uploadId, upload);
         m_hosted->uploadMedia(uploadId, path);
         return;
@@ -379,9 +407,11 @@ WorkspaceStore::AiResultRecord AiController::createResult(
         record.baseRevision = block ? block->revision : 0;
     }
     if (!m_workspace->store()->saveAiResult(record)) {
-        qWarning().noquote() << "writero ai: failed to save result:"
-                             << m_workspace->store()->lastError();
+        emit notice(QStringLiteral("Could not save the AI operation: %1")
+                        .arg(m_workspace->store()->lastError()));
+        return {};
     }
+    m_pendingResultIds.insert(record.id);
     return record;
 }
 
@@ -405,11 +435,19 @@ void AiController::executeChat(const WorkspaceStore::AiResultRecord &record,
     QVector<AiMessage> messages =
         textactions::buildMessages(operation, document, *block, instruction);
 
-    if (operation == textactions::Operation::ImageExplanation && block->mediaId > 0) {
+    if (operation == textactions::Operation::ImageExplanation) {
         QFile file(m_workspace->mediaPath(block->mediaId));
-        if (file.open(QIODevice::ReadOnly)) {
-            messages.last().imageData = file.readAll();
-            messages.last().imageMime = m_workspace->store()->mediaRecord(block->mediaId).mimeType;
+        if (block->mediaId <= 0 || !file.open(QIODevice::ReadOnly)) {
+            settleResult(record.id, QStringLiteral("failed"), {},
+                         QStringLiteral("Image explanation needs a readable attached image."));
+            return;
+        }
+        messages.last().imageData = file.readAll();
+        messages.last().imageMime = m_workspace->store()->mediaRecord(block->mediaId).mimeType;
+        if (messages.last().imageData.isEmpty()) {
+            settleResult(record.id, QStringLiteral("failed"), {},
+                         QStringLiteral("The image is empty."));
+            return;
         }
     }
 
@@ -426,9 +464,11 @@ void AiController::executeChat(const WorkspaceStore::AiResultRecord &record,
     emit streamingChanged();
 
     connect(client, &AiClient::tokenReceived, this, &AiController::appendStreaming);
+    const bool preserveWhitespace = block->type == BlockType::Code;
     connect(client, &AiClient::chatFinished, this,
-            [this, resultId, client](const QString &text, int, int) {
-                settleResult(resultId, QStringLiteral("completed"), text.trimmed(), {});
+            [this, resultId, client, preserveWhitespace](const QString &text, int, int) {
+                settleResult(resultId, QStringLiteral("completed"),
+                             preserveWhitespace ? text : text.trimmed(), {});
                 operationFinished();
                 client->deleteLater();
             });
@@ -444,8 +484,9 @@ void AiController::executeChat(const WorkspaceStore::AiResultRecord &record,
 QString AiController::runRewrite(int index, const QString &providerId, const QString &models,
                                  const QString &prompt)
 {
-    if (!m_document || !m_workspace || m_currentBlock != index)
-        setCurrentBlock(index);
+    if (!m_document || !m_workspace || !m_workspace->isReady())
+        return {};
+    setCurrentBlock(index);
     if (index < 0 || index >= m_document->blocks()->rowCount())
         return {};
 
@@ -453,8 +494,11 @@ QString AiController::runRewrite(int index, const QString &providerId, const QSt
         m_document->blocks()->get(index).value(QStringLiteral("blockId")).toString();
 
     QStringList modelList;
-    for (const QString &model : models.split(QLatin1Char(','), Qt::SkipEmptyParts))
-        modelList << model.trimmed();
+    for (const QString &model : models.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        const QString trimmed = model.trimmed();
+        if (!trimmed.isEmpty() && !modelList.contains(trimmed))
+            modelList << trimmed;
+    }
     if (modelList.isEmpty())
         return {};
 
@@ -465,6 +509,8 @@ QString AiController::runRewrite(int index, const QString &providerId, const QSt
     for (const QString &model : modelList) {
         const WorkspaceStore::AiResultRecord record = createResult(
             blockId, QStringLiteral("rewrite"), providerId, model, prompt);
+        if (record.id.isEmpty())
+            break;
         if (firstId.isEmpty())
             firstId = record.id;
         executeChat(record, textactions::Operation::Rewrite, prompt);
@@ -476,7 +522,7 @@ QString AiController::runRewrite(int index, const QString &providerId, const QSt
 QString AiController::runImageGeneration(int index, const QString &providerId, const QString &model,
                                          const QString &prompt, bool useCurrentAsReference)
 {
-    if (!m_document || !m_workspace)
+    if (!m_document || !m_workspace || !m_workspace->isReady())
         return {};
     setCurrentBlock(index);
     if (index < 0 || index >= m_document->blocks()->rowCount())
@@ -492,8 +538,22 @@ QString AiController::runImageGeneration(int index, const QString &providerId, c
     if (!block)
         return {};
 
+    QByteArray reference;
+    QString referenceMime;
+    if (useCurrentAsReference) {
+        QFile file(m_workspace->mediaPath(block->mediaId));
+        if (block->mediaId <= 0 || !file.open(QIODevice::ReadOnly)
+            || (reference = file.readAll()).isEmpty()) {
+            emit notice(QStringLiteral("A readable attached image is required as the reference."));
+            return {};
+        }
+        referenceMime = m_workspace->store()->mediaRecord(block->mediaId).mimeType;
+    }
+
     const WorkspaceStore::AiResultRecord record = createResult(
         block->id, QStringLiteral("image_generation"), providerId, model, prompt);
+    if (record.id.isEmpty())
+        return {};
     AiClient *client = makeClient(providerId, model);
     if (!client) {
         settleResult(record.id, QStringLiteral("failed"), {},
@@ -519,15 +579,6 @@ QString AiController::runImageGeneration(int index, const QString &providerId, c
         client->deleteLater();
     });
 
-    QByteArray reference;
-    QString referenceMime;
-    if (useCurrentAsReference && block->mediaId > 0) {
-        QFile file(m_workspace->mediaPath(block->mediaId));
-        if (file.open(QIODevice::ReadOnly)) {
-            reference = file.readAll();
-            referenceMime = m_workspace->store()->mediaRecord(block->mediaId).mimeType;
-        }
-    }
     client->generateImage(model, prompt, reference, referenceMime);
     client->setParent(this);
     refreshResults();
@@ -537,7 +588,7 @@ QString AiController::runImageGeneration(int index, const QString &providerId, c
 QString AiController::runImageExplanation(int index, const QString &providerId,
                                           const QString &model, const QString &prompt)
 {
-    if (!m_document || !m_workspace)
+    if (!m_document || !m_workspace || !m_workspace->isReady())
         return {};
     setCurrentBlock(index);
     if (index < 0 || index >= m_document->blocks()->rowCount())
@@ -552,6 +603,8 @@ QString AiController::runImageExplanation(int index, const QString &providerId,
         m_document->blocks()->get(index).value(QStringLiteral("blockId")).toString();
     const WorkspaceStore::AiResultRecord record = createResult(
         blockId, QStringLiteral("image_explanation"), providerId, model, prompt);
+    if (record.id.isEmpty())
+        return {};
     executeChat(record, textactions::Operation::ImageExplanation, prompt);
     refreshResults();
     return record.id;
@@ -559,7 +612,7 @@ QString AiController::runImageExplanation(int index, const QString &providerId,
 
 bool AiController::applyResult(const QString &resultId, bool insertBelow)
 {
-    if (!m_document)
+    if (!m_document || !m_workspace || !m_workspace->isReady())
         return false;
 
     const auto it = std::find_if(m_resultRecords.cbegin(), m_resultRecords.cend(),
@@ -569,11 +622,12 @@ bool AiController::applyResult(const QString &resultId, bool insertBelow)
     if (it == m_resultRecords.cend())
         return false;
     const WorkspaceStore::AiResultRecord record = *it;
-    if (record.status != QLatin1String("completed"))
+    if (record.status != QLatin1String("completed")
+        || record.documentId != m_document->documentId() || record.blockId.isEmpty())
         return false;
 
     const Block *block = blockById(record.blockId);
-    if (!block && !insertBelow)
+    if (!block)
         return false;
     const int index = block ? m_document->session().document().indexOf(block->id) : -1;
 
@@ -599,12 +653,18 @@ bool AiController::applyResult(const QString &resultId, bool insertBelow)
     }
 
     if (insertBelow) {
-        Block created = *block;
+        Block created = record.kind == QLatin1String("image_explanation")
+            ? Block::create(BlockType::Text) : *block;
+        created.id = newId();
         created.content = record.content;
         created.revision = 1;
         m_document->session().insertBlock(index + 1, created, QStringLiteral("ai"));
     } else {
         Block updated = *block;
+        if (record.kind == QLatin1String("image_explanation")) {
+            updated.type = BlockType::Text;
+            updated.mediaId = 0;
+        }
         updated.content = record.content;
         m_document->session().updateBlock(index, updated, QStringLiteral("ai"));
     }
@@ -640,7 +700,7 @@ void AiController::runBulkRewrite(const QString &providerId, const QString &mode
 void AiController::runBulk(const QString &providerId, const QString &model,
                            textactions::Operation operation, const QString &instruction)
 {
-    if (!m_document || !m_workspace)
+    if (!m_document || !m_workspace || !m_workspace->isReady())
         return;
 
     const Document &document = m_document->session().document();
@@ -664,6 +724,8 @@ void AiController::runBulk(const QString &providerId, const QString &model,
                              ? QStringLiteral("polish")
                              : QStringLiteral("bulk_rewrite"),
                      providerId, model, instruction);
+    if (record.id.isEmpty())
+        return;
 
     QVector<AiMessage> messages = textactions::buildBulkMessages(operation, document, instruction);
     AiClient *client = makeClient(providerId, model);
@@ -684,7 +746,7 @@ void AiController::runBulk(const QString &providerId, const QString &model,
     }
 
     connect(client, &AiClient::chatFinished, this,
-            [this, resultId, client, revisions](const QString &text, int, int) {
+            [this, resultId, client, revisions, record](const QString &text, int, int) {
                 const QString payload = stripCodeFences(text);
                 const QJsonDocument json = QJsonDocument::fromJson(payload.toUtf8());
                 QJsonArray entries = json.isArray() ? json.array()
@@ -699,6 +761,21 @@ void AiController::runBulk(const QString &providerId, const QString &model,
                     return;
                 }
 
+                QSet<QString> seen;
+                for (const QJsonValue &value : std::as_const(entries)) {
+                    const QJsonObject object = value.toObject();
+                    const QString id = object.value(QStringLiteral("id")).toString();
+                    if (id.isEmpty() || !revisions.contains(id) || seen.contains(id)
+                        || !object.value(QStringLiteral("content")).isString()) {
+                        settleResult(resultId, QStringLiteral("failed"), {},
+                                     QStringLiteral("The provider returned invalid block changes."));
+                        operationFinished();
+                        client->deleteLater();
+                        return;
+                    }
+                    seen.insert(id);
+                }
+
                 int applied = 0;
                 int skipped = 0;
                 for (const QJsonValue &value : std::as_const(entries)) {
@@ -710,8 +787,18 @@ void AiController::runBulk(const QString &providerId, const QString &model,
                     const Block *block = blockById(blockId);
                     const int index = block ? m_document->session().document().indexOf(blockId)
                                             : -1;
-                    if (!block || index < 0
+                    if (!m_document || m_document->documentId() != record.documentId
+                        || !block || index < 0
                         || revisions.value(blockId, -1) != block->revision) {
+                        WorkspaceStore::AiResultRecord review = record;
+                        review.id = newId();
+                        review.blockId = blockId;
+                        review.kind = QStringLiteral("rewrite");
+                        review.batchId = resultId;
+                        review.baseRevision = revisions.value(blockId);
+                        review.status = QStringLiteral("completed");
+                        review.content = content;
+                        m_workspace->store()->saveAiResult(review);
                         ++skipped;
                         continue;
                     }
@@ -745,7 +832,8 @@ void AiController::runBulk(const QString &providerId, const QString &model,
 void AiController::settleResult(const QString &resultId, const QString &status,
                                 const QString &content, const QString &error)
 {
-    if (m_workspace != nullptr)
+    m_pendingResultIds.remove(resultId);
+    if (m_workspace != nullptr && m_workspace->isReady())
         m_workspace->store()->updateAiResult(resultId, status, content, error);
     for (WorkspaceStore::AiResultRecord &record : m_resultRecords) {
         if (record.id == resultId) {
@@ -757,6 +845,26 @@ void AiController::settleResult(const QString &resultId, const QString &status,
     refreshResults();
     if (status == QLatin1String("failed"))
         emit notice(error);
+}
+
+void AiController::cancelOperations()
+{
+    const auto clients = findChildren<AiClient *>(QString(), Qt::FindDirectChildrenOnly);
+    for (AiClient *client : clients) {
+        disconnect(client, nullptr, this, nullptr);
+        client->abort();
+        client->deleteLater();
+    }
+    const auto pending = m_pendingResultIds;
+    for (const QString &resultId : pending)
+        settleResult(resultId, QStringLiteral("failed"), {},
+                     QStringLiteral("Workspace changed while the operation was running."));
+    // Replacing the hosted provider invalidates both jobs and pending uploads.
+    AccountSession *account = m_account;
+    setAccount(nullptr);
+    setAccount(account);
+    m_activeOperations = 0;
+    operationFinished();
 }
 
 void AiController::operationStarted()

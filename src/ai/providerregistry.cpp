@@ -29,6 +29,8 @@ void ProviderRegistry::setWorkspace(Workspace *workspace)
 
 void ProviderRegistry::load()
 {
+    qDeleteAll(m_loadingModels);
+    m_loadingModels.clear();
     m_profiles.clear();
     if (m_workspace != nullptr && m_workspace->isReady()) {
         const QString json = m_workspace->setting(QString::fromLatin1(SettingsKey));
@@ -115,8 +117,10 @@ void ProviderRegistry::updateProvider(const QString &id, const QString &name,
             continue;
         if (!name.isEmpty())
             profile.name = name;
-        if (!baseUrl.isEmpty())
+        if (!baseUrl.isEmpty() && baseUrl != profile.baseUrl) {
+            invalidateModels(id);
             profile.baseUrl = baseUrl;
+        }
         if (!defaultModel.isEmpty())
             profile.defaultModel = defaultModel;
         save();
@@ -129,6 +133,7 @@ void ProviderRegistry::removeProvider(const QString &id)
     for (int i = 0; i < m_profiles.size(); ++i) {
         if (m_profiles.at(i).id != id)
             continue;
+        invalidateModels(id);
         m_profiles.removeAt(i);
         m_credentials.remove(credentialKey(id));
         save();
@@ -160,10 +165,9 @@ void ProviderRegistry::refreshModels(const QString &id)
         return;
     }
 
-    m_loadingModels.insert(id);
-    emit changed();
-
     ModelCatalog *catalog = new ModelCatalog(this);
+    m_loadingModels.insert(id, catalog);
+    emit changed();
     connect(catalog, &ModelCatalog::finished, this, [this, catalog, id](bool ok) {
         m_loadingModels.remove(id);
         if (!ok) {
@@ -183,6 +187,15 @@ void ProviderRegistry::refreshModels(const QString &id)
     });
 
     catalog->fetch(selected, m_credentials.load(credentialKey(id)));
+}
+
+void ProviderRegistry::invalidateModels(const QString &id)
+{
+    delete m_loadingModels.take(id);
+    m_models.remove(id);
+    if (m_workspace && m_workspace->isReady())
+        m_workspace->setSetting(modelsKey(id), QStringLiteral(""));
+    emit modelsChanged(id);
 }
 
 bool ProviderRegistry::modelsLoading(const QString &id) const

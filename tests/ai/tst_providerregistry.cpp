@@ -159,6 +159,84 @@ private slots:
         QCOMPARE(reopened.modelsFor(id, QStringLiteral("generate")).size(), 1);
     }
 
+    void removedProviderClearsCachedModels()
+    {
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+        ProviderRegistry registry;
+        registry.setWorkspace(&workspace);
+        StubServer server;
+        QVERIFY(server.listen());
+        server.setBody(R"({"data":[{"id":"gpt-4o"}]})");
+        const QString id = registry.addProvider({}, QStringLiteral("openai-compatible"),
+            QStringLiteral("http://127.0.0.1:%1/v1").arg(server.serverPort()), {}, {});
+        registry.refreshModels(id);
+        QTRY_VERIFY(registry.hasModels(id));
+        registry.removeProvider(id);
+        QVERIFY(!registry.hasModels(id));
+        QVERIFY(workspace.setting(QStringLiteral("ai.models.") + id).isEmpty());
+    }
+
+    void endpointEditInvalidatesCachedModels()
+    {
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+        ProviderRegistry registry;
+        registry.setWorkspace(&workspace);
+        StubServer server;
+        QVERIFY(server.listen());
+        server.setBody(R"({"data":[{"id":"old-model"}]})");
+        const QString id = registry.addProvider({}, QStringLiteral("openai-compatible"),
+            QStringLiteral("http://127.0.0.1:%1/v1").arg(server.serverPort()), {}, {});
+        registry.refreshModels(id);
+        QTRY_VERIFY(registry.hasModels(id));
+        registry.updateProvider(id, {}, QStringLiteral("http://localhost:45108/v1"), {});
+        QVERIFY(!registry.hasModels(id));
+        QVERIFY(workspace.setting(QStringLiteral("ai.models.") + id).isEmpty());
+    }
+
+    void removedProviderCannotReceiveInFlightCatalog()
+    {
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+        ProviderRegistry registry;
+        registry.setWorkspace(&workspace);
+        StubServer server;
+        QVERIFY(server.listen());
+        server.setBody(R"({"data":[{"id":"old-model"}]})");
+        const QString id = registry.addProvider({}, QStringLiteral("openai-compatible"),
+            QStringLiteral("http://127.0.0.1:%1/v1").arg(server.serverPort()), {}, {});
+        registry.refreshModels(id);
+        registry.removeProvider(id);
+        QTest::qWait(100);
+        QVERIFY(!registry.hasModels(id));
+        QVERIFY(!registry.modelsLoading(id));
+    }
+
+    void workspaceSwitchCannotReceivePreviousCatalog()
+    {
+        QTemporaryDir dir, otherDir;
+        Workspace workspace, other;
+        QVERIFY(workspace.open(dir.path()));
+        QVERIFY(other.open(otherDir.path()));
+        ProviderRegistry registry;
+        registry.setWorkspace(&workspace);
+        StubServer server;
+        QVERIFY(server.listen());
+        server.setBody(R"({"data":[{"id":"old-model"}]})");
+        const QString id = registry.addProvider({}, QStringLiteral("openai-compatible"),
+            QStringLiteral("http://127.0.0.1:%1/v1").arg(server.serverPort()), {}, {});
+        registry.refreshModels(id);
+        registry.setWorkspace(&other);
+        QTest::qWait(100);
+        QVERIFY(!registry.hasModels(id));
+        QVERIFY(other.setting(QStringLiteral("ai.models.") + id).isEmpty());
+        QVERIFY(!registry.modelsLoading(id));
+    }
+
     void createClientCarriesProfile()
     {
         qputenv("WRITERO_DISABLE_KEYRING", "1");

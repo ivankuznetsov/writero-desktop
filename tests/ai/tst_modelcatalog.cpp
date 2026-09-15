@@ -152,6 +152,35 @@ private slots:
         QVERIFY(find(catalog.models(), QStringLiteral("vision-model")).imageInput);
     }
 
+    void concurrentFetchReplacesPreviousRequest()
+    {
+        StubServer first, second;
+        QVERIFY(first.listen());
+        QVERIFY(second.listen());
+        first.setBody(R"({"data":[{"id":"old"}]})");
+        second.setBody(R"({"data":[{"id":"new"}]})");
+        ProviderProfile profile;
+        profile.type = ProviderType::OpenAiCompatible;
+        profile.baseUrl = QStringLiteral("http://127.0.0.1:%1/v1").arg(first.serverPort());
+        ModelCatalog catalog;
+        QSignalSpy finished(&catalog, &ModelCatalog::finished);
+        catalog.fetch(profile, {});
+        profile.baseUrl = QStringLiteral("http://127.0.0.1:%1/v1").arg(second.serverPort());
+        catalog.fetch(profile, {});
+        QTRY_COMPARE(finished.size(), 1);
+        QTest::qWait(100);
+        QCOMPARE(catalog.models().size(), 1);
+        QCOMPARE(catalog.models().first().id, QStringLiteral("new"));
+    }
+
+    void compatibleMetadataWithoutModalitiesRetainsInference()
+    {
+        const auto models = ModelCatalog::parse(ProviderType::OpenAiCompatible,
+            R"({"data":[{"id":"gpt-4o","architecture":{"tokenizer":"GPT"}}]})");
+        QCOMPARE(models.size(), 1);
+        QVERIFY(models.first().imageInput);
+    }
+
     void cacheRoundTrips()
     {
         ModelCapabilities model;

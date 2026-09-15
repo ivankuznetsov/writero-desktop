@@ -71,12 +71,13 @@ private:
     void load();
     void save();
     void loadModelCache();
+    void invalidateModels(const QString &id);
     void rebuildVariantProfiles();
 
     QVector<ProviderProfile> m_profiles;
     QVariantList m_variantProfiles;
     QHash<QString, QVector<ModelCapabilities>> m_models;
-    QSet<QString> m_loadingModels;
+    QHash<QString, ModelCatalog *> m_loadingModels;
     Workspace *m_workspace = nullptr;
     CredentialStore m_credentials;
     QString m_error;
