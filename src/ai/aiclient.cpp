@@ -118,15 +118,32 @@ void AiClient::chat(const QString &model, const QVector<AiMessage> &messages, do
     }
 
     QJsonArray messageArray;
-    for (const AiMessage &message : messages)
-        messageArray.append(messageToJson(message));
+    for (const AiMessage &message : messages) {
+        if (m_profile.type == ProviderType::Ollama) {
+            QJsonObject object{{QStringLiteral("role"), message.role},
+                               {QStringLiteral("content"), message.content}};
+            if (!message.imageData.isEmpty())
+                object.insert(QStringLiteral("images"),
+                              QJsonArray{QString::fromLatin1(message.imageData.toBase64())});
+            messageArray.append(object);
+        } else {
+            messageArray.append(messageToJson(message));
+        }
+    }
 
     QJsonObject body;
     body.insert(QStringLiteral("model"), effectiveModel);
     body.insert(QStringLiteral("messages"), messageArray);
-    body.insert(QStringLiteral("temperature"), temperature);
-    if (maxTokens > 0)
-        body.insert(QStringLiteral("max_tokens"), maxTokens);
+    if (m_profile.type == ProviderType::Ollama) {
+        QJsonObject options{{QStringLiteral("temperature"), temperature}};
+        if (maxTokens > 0)
+            options.insert(QStringLiteral("num_predict"), maxTokens);
+        body.insert(QStringLiteral("options"), options);
+    } else {
+        body.insert(QStringLiteral("temperature"), temperature);
+        if (maxTokens > 0)
+            body.insert(QStringLiteral("max_tokens"), maxTokens);
+    }
 
     if (m_profile.type == ProviderType::Ollama) {
         body.insert(QStringLiteral("stream"), true);
@@ -149,19 +166,32 @@ void AiClient::chat(const QString &model, const QVector<AiMessage> &messages, do
     }
 
     connect(m_reply, &QNetworkReply::readyRead, this, &AiClient::handleChatReadyRead);
-    connect(m_reply, &QNetworkReply::finished, this, [this] {
-        const QNetworkReply::NetworkError error = m_reply->error();
-        const QByteArray body = m_reply->readAll();
-        if (error != QNetworkReply::NoError && error != QNetworkReply::OperationCanceledError) {
+    QNetworkReply *reply = m_reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        if (m_reply != reply)
+            return;
+        const QNetworkReply::NetworkError error = reply->error();
+        if (error != QNetworkReply::NoError) {
+            const QByteArray body = reply->readAll();
             fail(QStringLiteral("Provider request failed: %1")
-                     .arg(QString::fromUtf8(body).left(300)));
+                     .arg(body.isEmpty() ? reply->errorString()
+                                        : QString::fromUtf8(body).left(300)));
             return;
         }
+        handleChatReadyRead();
+        if (m_reply != reply)
+            return;
         if (!m_buffer.isEmpty()) {
-            handleStreamLine(m_buffer);
+            const QByteArray line = m_buffer;
             m_buffer.clear();
+            handleStreamLine(line);
         }
-        finishChat();
+        if (m_reply != reply)
+            return;
+        if (!m_eventData.isEmpty())
+            handleStreamLine({});
+        if (m_reply == reply)
+            finishChat();
     });
 }
 
@@ -252,39 +282,24 @@ void AiClient::handleChatReadyRead()
 {
     if (!m_reply)
         return;
-    m_buffer += m_reply->readAll();
-
-    if (m_profile.type == ProviderType::Ollama) {
-        while (true) {
-            const int newline = m_buffer.indexOf('\n');
-            if (newline < 0)
-                break;
-            const QByteArray line = m_buffer.left(newline).trimmed();
-            m_buffer.remove(0, newline + 1);
-            if (line.isEmpty())
-                continue;
-            const QJsonObject object = QJsonDocument::fromJson(line).object();
-            const QString delta = object.value(QStringLiteral("message"))
-                                      .toObject()
-                                      .value(QStringLiteral("content"))
-                                      .toString();
-            if (!delta.isEmpty()) {
-                m_streamedText += delta;
-                emit tokenReceived(delta);
-            }
-            if (object.value(QStringLiteral("done")).toBool()) {
-                m_promptTokens = object.value(QStringLiteral("prompt_eval_count")).toInt();
-                m_completionTokens = object.value(QStringLiteral("eval_count")).toInt();
-            }
-        }
+    // Keep HTTP error bodies intact for the finished handler's diagnostic.
+    if (m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() >= 400)
         return;
-    }
-
-    while (true) {
-        const int newline = m_buffer.indexOf('\n');
+    QNetworkReply *reply = m_reply;
+    m_buffer += reply->readAll();
+    while (m_reply == reply) {
+        if (m_skipLineFeed && !m_buffer.isEmpty()) {
+            m_skipLineFeed = false;
+            if (m_buffer.startsWith('\n'))
+                m_buffer.remove(0, 1);
+        }
+        const int lf = m_buffer.indexOf('\n');
+        const int cr = m_buffer.indexOf('\r');
+        const int newline = lf < 0 ? cr : cr < 0 ? lf : qMin(lf, cr);
         if (newline < 0)
             break;
-        const QByteArray line = m_buffer.left(newline).trimmed();
+        const QByteArray line = m_buffer.left(newline);
+        m_skipLineFeed = m_buffer.at(newline) == '\r';
         m_buffer.remove(0, newline + 1);
         handleStreamLine(line);
     }
@@ -292,31 +307,68 @@ void AiClient::handleChatReadyRead()
 
 void AiClient::handleStreamLine(const QByteArray &line)
 {
-    if (line.isEmpty() || !line.startsWith("data:"))
+    if (m_profile.type == ProviderType::Ollama) {
+        if (!line.trimmed().isEmpty())
+            handleStreamPayload(line);
         return;
-    const QByteArray payload = line.mid(5).trimmed();
-    if (payload == "[DONE]")
-        return;
+    }
+    if (line.isEmpty()) {
+        if (!m_eventData.isEmpty()) {
+            QByteArray payload = m_eventData;
+            m_eventData.clear();
+            payload.chop(1); // SSE joins data fields with a newline.
+            handleStreamPayload(payload);
+        }
+    } else if (line.startsWith("data:")) {
+        QByteArray data = line.mid(5);
+        if (data.startsWith(' '))
+            data.remove(0, 1);
+        m_eventData += data + '\n';
+    }
+}
 
-    const QJsonObject object = QJsonDocument::fromJson(payload).object();
-    const QJsonArray choices = object.value(QStringLiteral("choices")).toArray();
-    if (!choices.isEmpty()) {
-        const QString delta = choices.first()
-                                  .toObject()
-                                  .value(QStringLiteral("delta"))
-                                  .toObject()
-                                  .value(QStringLiteral("content"))
-                                  .toString();
-        if (!delta.isEmpty()) {
-            m_streamedText += delta;
-            emit tokenReceived(delta);
+void AiClient::handleStreamPayload(const QByteArray &payload)
+{
+    if (payload.trimmed() == "[DONE]")
+        return;
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        fail(QStringLiteral("Provider returned invalid streaming JSON."));
+        return;
+    }
+    const QJsonObject object = document.object();
+    if (object.contains(QStringLiteral("error"))) {
+        const QJsonValue error = object.value(QStringLiteral("error"));
+        const QString message = error.isString() ? error.toString()
+            : error.toObject().value(QStringLiteral("message")).toString();
+        fail(QStringLiteral("Provider request failed: %1")
+                 .arg(message.isEmpty() ? QStringLiteral("stream error") : message.left(300)));
+        return;
+    }
+    QString delta;
+    if (m_profile.type == ProviderType::Ollama) {
+        delta = object.value(QStringLiteral("message")).toObject()
+                    .value(QStringLiteral("content")).toString();
+        if (object.value(QStringLiteral("done")).toBool()) {
+            m_promptTokens = object.value(QStringLiteral("prompt_eval_count")).toInt();
+            m_completionTokens = object.value(QStringLiteral("eval_count")).toInt();
+        }
+    } else {
+        const QJsonArray choices = object.value(QStringLiteral("choices")).toArray();
+        if (!choices.isEmpty()) {
+            delta = choices.first().toObject().value(QStringLiteral("delta")).toObject()
+                        .value(QStringLiteral("content")).toString();
+        }
+        const QJsonObject usage = object.value(QStringLiteral("usage")).toObject();
+        if (!usage.isEmpty()) {
+            m_promptTokens = usage.value(QStringLiteral("prompt_tokens")).toInt();
+            m_completionTokens = usage.value(QStringLiteral("completion_tokens")).toInt();
         }
     }
-
-    const QJsonObject usage = object.value(QStringLiteral("usage")).toObject();
-    if (!usage.isEmpty()) {
-        m_promptTokens = usage.value(QStringLiteral("prompt_tokens")).toInt();
-        m_completionTokens = usage.value(QStringLiteral("completion_tokens")).toInt();
+    if (!delta.isEmpty()) {
+        m_streamedText += delta;
+        emit tokenReceived(delta);
     }
 }
 
@@ -363,19 +415,34 @@ void AiClient::finishChatImage(const QByteArray &body)
         const int comma = url.indexOf(QLatin1Char(','));
         const QString header = url.left(comma);
         const QString mime = header.section(QLatin1Char(';'), 0, 0).mid(5);
-        const QByteArray data = QByteArray::fromBase64(url.mid(comma + 1).toUtf8());
+        const auto decoded = QByteArray::fromBase64Encoding(url.mid(comma + 1).toUtf8(),
+                                                           QByteArray::AbortOnBase64DecodingErrors);
+        if (comma < 0 || !header.endsWith(QLatin1String(";base64"))
+            || !mime.startsWith(QLatin1String("image/")) || !decoded
+            || decoded.decoded.isEmpty()) {
+            fail(QStringLiteral("The provider returned invalid image data."));
+            return;
+        }
         reset();
-        emit imageFinished(data, mime.isEmpty() ? QStringLiteral("image/png") : mime);
+        emit imageFinished(decoded.decoded, mime);
         return;
     }
 
-    QNetworkRequest request{QUrl(url)};
-    QNetworkReply *reply = m_network->get(request);
+    const QUrl imageUrl(url);
+    if (!imageUrl.isValid() || imageUrl.host().isEmpty()
+        || (imageUrl.scheme() != QLatin1String("https")
+            && imageUrl.scheme() != QLatin1String("http"))) {
+        fail(QStringLiteral("The provider returned an invalid image URL."));
+        return;
+    }
+    reset();
+    QNetworkRequest request{imageUrl};
+    m_reply = m_network->get(request);
+    QNetworkReply *reply = m_reply;
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         const QByteArray data = reply->readAll();
         const QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
         const bool ok = reply->error() == QNetworkReply::NoError && !data.isEmpty();
-        reply->deleteLater();
         if (!ok) {
             fail(QStringLiteral("Could not download the generated image."));
             return;
@@ -399,7 +466,13 @@ void AiClient::finishImage(const QByteArray &body)
         fail(QStringLiteral("The provider returned no image data."));
         return;
     }
-    const QByteArray bytes = QByteArray::fromBase64(base64.toUtf8());
+    const auto decoded = QByteArray::fromBase64Encoding(base64.toUtf8(),
+                                                       QByteArray::AbortOnBase64DecodingErrors);
+    if (!decoded || decoded.decoded.isEmpty()) {
+        fail(QStringLiteral("The provider returned invalid image data."));
+        return;
+    }
+    const QByteArray bytes = decoded.decoded;
     reset();
     emit imageFinished(bytes, QStringLiteral("image/png"));
 }
@@ -424,15 +497,12 @@ void AiClient::fail(const QString &error)
 void AiClient::reset()
 {
     m_buffer.clear();
+    m_eventData.clear();
+    m_skipLineFeed = false;
     m_streamedText.clear();
     m_promptTokens = 0;
     m_completionTokens = 0;
-    if (m_reply) {
-        QNetworkReply *reply = m_reply;
-        m_reply = nullptr;
-        disconnect(reply, nullptr, this, nullptr);
-        reply->deleteLater();
-    }
+    abort();
 }
 
 } // namespace writero

@@ -67,6 +67,7 @@ private:
     void finishChatImage(const QByteArray &body);
     void finishImage(const QByteArray &body);
     void handleStreamLine(const QByteArray &line);
+    void handleStreamPayload(const QByteArray &payload);
     void fail(const QString &error);
     void reset();
     QString endpoint(const QString &suffix) const;
@@ -77,6 +78,8 @@ private:
     QNetworkAccessManager *m_network = nullptr;
     QNetworkReply *m_reply = nullptr;
     QByteArray m_buffer;
+    QByteArray m_eventData;
+    bool m_skipLineFeed = false;
     QString m_streamedText;
     Mode m_mode = Mode::Chat;
     int m_promptTokens = 0;
