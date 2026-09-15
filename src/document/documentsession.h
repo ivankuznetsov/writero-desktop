@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QVector>
 
+#include <functional>
+
 #include "document/document.h"
 #include "document/documentchange.h"
 
@@ -42,6 +44,10 @@ public:
     const QVector<DocumentChange> &journal() const { return m_journal; }
     QVector<DocumentChange> drainJournal();
     void clearJournal() { m_journal.clear(); }
+
+    /// Groups synchronous local mutation commands into one undo step.
+    /// The callback must not load documents, apply remote changes, or undo/redo.
+    void editGroup(const std::function<void()> &edit);
 
     /// Mutations return true when the document actually changed.
     bool setTitle(const QString &title, bool coalesce = false);

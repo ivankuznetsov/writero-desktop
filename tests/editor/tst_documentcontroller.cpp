@@ -1,4 +1,6 @@
 #include <QtTest/QtTest>
+#include <QTextDocument>
+#include <QTextCursor>
 
 #include "document/documentsession.h"
 #include "editor/documentcontroller.h"
@@ -206,6 +208,130 @@ private slots:
 
         controller.setBlockType(0, QStringLiteral("text"));
         QCOMPARE(controller.indentListItem(0, 0, false), -1);
+    }
+
+    void exitingSoleEmptyListItemRemovesMarker()
+    {
+        DocumentController controller;
+        controller.createBlankDocument();
+        controller.setBlockType(0, QStringLiteral("ul"));
+        controller.setBlockContent(0, QStringLiteral("- "));
+        QCOMPARE(controller.handleListEnter(0, 2), 0);
+        QCOMPARE(controller.session().document().blocks.at(0).type, BlockType::Text);
+        QCOMPARE(controller.session().document().blocks.at(0).content, QString());
+        controller.undo();
+        QCOMPARE(controller.session().document().blocks.at(0).type, BlockType::Ul);
+        QCOMPARE(controller.session().document().blocks.at(0).content, QStringLiteral("- "));
+    }
+
+    void outdentAtStartKeepsCursorOnCurrentLine()
+    {
+        DocumentController controller;
+        controller.createBlankDocument();
+        controller.setBlockType(0, QStringLiteral("ul"));
+        controller.setBlockContent(0, QStringLiteral("  - one\n  - two"));
+        QCOMPARE(controller.indentListItem(0, 0, true), 0);
+        QCOMPARE(controller.indentListItem(0, 6, true), 6);
+        QCOMPARE(controller.session().document().blocks.at(0).content,
+                 QStringLiteral("- one\n- two"));
+    }
+
+    void enterInsideListMarkerDoesNotCorruptMarker()
+    {
+        DocumentController controller;
+        controller.createBlankDocument();
+        controller.setBlockType(0, QStringLiteral("ol"));
+        controller.setBlockContent(0, QStringLiteral("12. first"));
+        QCOMPARE(controller.handleListEnter(0, 1), 9);
+        QCOMPARE(controller.session().document().blocks.at(0).content,
+                 QStringLiteral("12. \n13. first"));
+    }
+
+    void codeFormattingPreservesEmbeddedBackticks_data()
+    {
+        QTest::addColumn<QString>("selected");
+        QTest::newRow("internal") << QStringLiteral("a`b");
+        QTest::newRow("ends") << QStringLiteral("`name`");
+        QTest::newRow("runs") << QStringLiteral("a``b```c");
+        QTest::newRow("edge-spaces") << QStringLiteral(" a ");
+    }
+
+    void codeFormattingPreservesEmbeddedBackticks()
+    {
+        QFETCH(QString, selected);
+        const auto result = formatactions::wrap(selected, 0, selected.size(), QStringLiteral("code"));
+        QTextDocument rendered;
+        rendered.setMarkdown(result.text);
+        QCOMPARE(rendered.toPlainText(), selected);
+        QCOMPARE(result.text.mid(result.start, result.end - result.start), selected);
+    }
+
+    void linkFormattingPreservesLabelAndDestination()
+    {
+        const QString label = QStringLiteral("a]b");
+        const auto result = formatactions::link(label, 0, label.size(),
+                                               QStringLiteral("https://example.com/a)b"));
+        QTextDocument rendered;
+        rendered.setMarkdown(result.text);
+        QCOMPARE(rendered.toPlainText(), label);
+        QTextCursor cursor(&rendered);
+        cursor.setPosition(1);
+        const QUrl destination(cursor.charFormat().anchorHref());
+        QCOMPARE(destination.scheme(), QStringLiteral("https"));
+        QCOMPARE(destination.host(), QStringLiteral("example.com"));
+        QCOMPARE(destination.path(), QStringLiteral("/a)b"));
+    }
+
+    void linkShortcutKeepsEditableUrlPlaceholder()
+    {
+        const auto result = formatactions::link(QString(), 0, 0, QStringLiteral("https://"));
+        QCOMPARE(result.text, QStringLiteral("[link](https://)"));
+    }
+
+    void pasteIdenticalFirstBlockStillInsertsRemainingBlocks()
+    {
+        DocumentController controller;
+        controller.createBlankDocument();
+        controller.setBlockContent(0, QStringLiteral("alpha"));
+        QVERIFY(controller.pasteMarkdown(0, QStringLiteral("alpha\n\nbeta")));
+        QCOMPARE(controller.session().document().blocks.at(1).content, QStringLiteral("beta"));
+    }
+
+    void multiBlockPasteUndoesAsOneGesture()
+    {
+        DocumentController controller;
+        controller.createBlankDocument();
+        controller.setBlockContent(0, QStringLiteral("before"), true);
+        QVERIFY(controller.pasteMarkdown(0, QStringLiteral("alpha\n\nbeta\n\n# heading")));
+        controller.undo();
+        QCOMPARE(controller.session().document().blocks.size(), 2);
+        QCOMPARE(controller.session().document().blocks.at(0).content, QStringLiteral("before"));
+        controller.redo();
+        QCOMPARE(controller.session().document().blocks.at(0).content, QStringLiteral("alpha"));
+        QCOMPARE(controller.session().document().blocks.at(1).content, QStringLiteral("beta"));
+        QCOMPARE(controller.session().document().blocks.at(2).type, BlockType::Heading);
+    }
+
+    void pasteUndoRedoStressPreservesWholeDocument()
+    {
+        for (int iteration = 0; iteration < 100; ++iteration) {
+            DocumentController controller;
+            controller.createBlankDocument();
+            controller.setBlockContent(0, QStringLiteral("draft %1").arg(iteration), true);
+            const BlockList before = controller.session().document().blocks;
+            QStringList paragraphs;
+            for (int index = 0; index < 2 + iteration % 9; ++index)
+                paragraphs.append(QStringLiteral("paragraph %1").arg(index));
+            QVERIFY(controller.pasteMarkdown(0, paragraphs.join(QStringLiteral("\n\n"))));
+            const BlockList pasted = controller.session().document().blocks;
+            controller.undo();
+            QCOMPARE(controller.session().document().blocks, before);
+            controller.redo();
+            QCOMPARE(controller.session().document().blocks, pasted);
+            controller.setBlockContent(0, QStringLiteral("after paste"), true);
+            controller.undo();
+            QCOMPARE(controller.session().document().blocks, pasted);
+        }
     }
 
     void undoRestoresContentThroughController()

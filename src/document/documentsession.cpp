@@ -3,6 +3,7 @@
 #include "document/listcontent.h"
 
 #include <QDateTime>
+#include <QScopeGuard>
 #include <utility>
 
 namespace writero {
@@ -449,6 +450,14 @@ void DocumentSession::appendTrailingEmptyBlock(const QString &source, bool inclu
     recordJournalOnly(change);
     if (includeInUndo && !m_undoStack.isEmpty())
         m_undoStack.last().append(change);
+}
+
+void DocumentSession::editGroup(const std::function<void()> &edit)
+{
+    const qsizetype historyStart = m_undoStack.size();
+    m_sinceLastChange.invalidate();
+    const auto finish = qScopeGuard([&] { groupUndoSince(historyStart); });
+    edit();
 }
 
 void DocumentSession::groupUndoSince(qsizetype first)
