@@ -162,6 +162,52 @@ private slots:
         QCOMPARE(workspace.documents()->rowCount(), 2);
     }
 
+    void bundleImportFailsWhenMediaCannotBeStored()
+    {
+        QTemporaryDir sourceDir;
+        Workspace source;
+        QVERIFY(source.open(sourceDir.path()));
+        const QString id = source.createDocument("Media");
+        const QString imagePath = sourceDir.filePath("pixel.png");
+        QFile image(imagePath);
+        QVERIFY(image.open(QIODevice::WriteOnly));
+        image.write("image-bytes");
+        image.close();
+        Document document = source.store()->loadDocument(id);
+        document.blocks[0].mediaId = source.importMedia(imagePath);
+        QVERIFY(document.blocks[0].mediaId > 0);
+        QVERIFY(source.store()->saveDocument(document, {}));
+        const QString bundle = sourceDir.filePath("bundle");
+        QVERIFY(!source.exportBundleTo(bundle, id).isEmpty());
+
+        QTemporaryDir targetDir;
+        Workspace target;
+        QVERIFY(target.open(targetDir.path()));
+        QVERIFY(QDir(targetDir.filePath("media/.staging")).removeRecursively());
+        QFile blocker(targetDir.filePath("media/.staging"));
+        QVERIFY(blocker.open(QIODevice::WriteOnly));
+        blocker.close();
+        QString error;
+        QVERIFY(target.importBundleFrom(bundle, &error).isEmpty());
+        QVERIFY(!error.isEmpty());
+        QVERIFY(target.store()->listDocuments().isEmpty());
+    }
+
+    void bundleExportFailsWhenAttachedBlobIsMissing()
+    {
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+        const QString id = workspace.createDocument("Missing media");
+        Document document = workspace.store()->loadDocument(id);
+        document.blocks[0].mediaId = workspace.store()->ensureMedia(
+            QString(64, 'a'), "missing.png", "image/png", 10);
+        QVERIFY(workspace.store()->saveDocument(document, {}));
+        QString error;
+        QVERIFY(workspace.exportBundleTo(dir.filePath("bundle"), id, &error).isEmpty());
+        QVERIFY(!error.isEmpty());
+    }
+
     void markdownImportReplacesBlocks()
     {
         QTemporaryDir dir;

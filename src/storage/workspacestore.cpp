@@ -61,14 +61,17 @@ bool WorkspaceStore::open(const QString &databasePath, QString *error)
         return false;
     }
 
-    QSqlQuery pragma(m_database);
-    pragma.exec(QStringLiteral("PRAGMA foreign_keys = ON"));
-    pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"));
-    pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
+    {
+        QSqlQuery pragma(m_database);
+        pragma.exec(QStringLiteral("PRAGMA foreign_keys = ON"));
+        pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"));
+        pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
+    }
 
     if (!migrate()) {
         if (error)
             *error = m_lastError;
+        close();
         return false;
     }
     return true;
@@ -303,6 +306,7 @@ bool WorkspaceStore::migrate()
 
     if (!m_database.commit()) {
         m_lastError = m_database.lastError().text();
+        m_database.rollback();
         return false;
     }
     return true;
@@ -465,6 +469,7 @@ bool WorkspaceStore::saveDocument(const Document &document, const QVector<Docume
 
     if (!m_database.commit()) {
         m_lastError = m_database.lastError().text();
+        m_database.rollback();
         if (error)
             *error = m_lastError;
         return false;
@@ -647,11 +652,36 @@ bool WorkspaceStore::setDocumentTrashed(const QString &documentId, bool trashed)
 
 bool WorkspaceStore::deleteDocument(const QString &documentId)
 {
+    if (!m_database.transaction()) {
+        m_lastError = m_database.lastError().text();
+        return false;
+    }
+    // Removed blocks remain in revisions so their retained media history must
+    // also be collected before the document's cascading revision deletion.
+    const QStringList statements = {
+        QStringLiteral("DELETE FROM media_versions WHERE block_id IN ("
+                       "SELECT id FROM blocks WHERE document_id = :id UNION "
+                       "SELECT block_id FROM revisions WHERE document_id = :id) "
+                       "AND block_id NOT IN (SELECT id FROM blocks WHERE document_id != :id "
+                       "UNION SELECT block_id FROM revisions WHERE document_id != :id)"),
+        QStringLiteral("DELETE FROM pending_operations WHERE document_id = :id"),
+        QStringLiteral("DELETE FROM sync_block_map WHERE document_id = :id"),
+        QStringLiteral("DELETE FROM sync_conflicts WHERE document_id = :id"),
+        QStringLiteral("DELETE FROM documents WHERE id = :id"),
+    };
     QSqlQuery query(m_database);
-    query.prepare(QStringLiteral("DELETE FROM documents WHERE id = :id"));
-    query.bindValue(QStringLiteral(":id"), documentId);
-    if (!query.exec()) {
-        m_lastError = query.lastError().text();
+    for (const QString &statement : statements) {
+        query.prepare(statement);
+        query.bindValue(QStringLiteral(":id"), documentId);
+        if (!query.exec()) {
+            m_lastError = query.lastError().text();
+            m_database.rollback();
+            return false;
+        }
+    }
+    if (!m_database.commit()) {
+        m_lastError = m_database.lastError().text();
+        m_database.rollback();
         return false;
     }
     return true;
