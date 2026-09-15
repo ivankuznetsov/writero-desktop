@@ -27,10 +27,6 @@ Dialog {
         function onAuthorizationRequired(url) {
             Qt.openUrlExternally(url)
         }
-        function onSignInFinished(success) {
-            if (!success && accountDialog.session.lastError !== "")
-                statusLabel.text = accountDialog.session.lastError
-        }
     }
 
     contentItem: ColumnLayout {
@@ -42,7 +38,9 @@ Dialog {
             wrapMode: Text.Wrap
             text: accountDialog.session && accountDialog.session.connected
                   ? qsTr("Connected as %1").arg(accountDialog.session.accountEmail)
-                  : qsTr("Connect to use cloud documents and hosted AI. "
+                  : accountDialog.session && accountDialog.session.lastError !== ""
+                    ? accountDialog.session.lastError
+                    : qsTr("Connect to use cloud documents and hosted AI. "
                          + "Local documents keep working without an account.")
             color: accountDialog.session && accountDialog.session.lastError !== ""
                    ? Theme.danger : Theme.text
@@ -113,7 +111,6 @@ Dialog {
                 text: qsTr("Connect\u2026")
                 enabled: accountDialog.session && !accountDialog.session.busy
                 onClicked: {
-                    statusLabel.text = ""
                     accountDialog.session.signIn()
                 }
             }

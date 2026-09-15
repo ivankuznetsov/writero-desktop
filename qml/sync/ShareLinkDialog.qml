@@ -70,7 +70,7 @@ Dialog {
                 readOnly: true
                 text: shareDialog.link
                 selectByMouse: true
-                onActivated: selectAll()
+                onActiveFocusChanged: if (activeFocus) selectAll()
             }
 
             Button {

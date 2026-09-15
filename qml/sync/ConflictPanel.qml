@@ -19,6 +19,18 @@ Dialog {
 
     property SyncEngine engine
 
+    function refreshConflicts() {
+        conflictList.model = engine ? engine.conflictList() : []
+    }
+
+    onOpened: refreshConflicts()
+
+    Connections {
+        target: conflictPanel.engine
+        function onConflictsChanged() { conflictPanel.refreshConflicts() }
+        function onChanged() { conflictPanel.refreshConflicts() }
+    }
+
     background: Rectangle {
         color: Theme.surface
         border.color: Theme.border

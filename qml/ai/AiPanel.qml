@@ -355,7 +355,7 @@ Drawer {
                             if (modelData.kind === "image_generation")
                                 return qsTr("[generated image]")
                             const content = modelData.content || ""
-                            return content.length > 220 ? content.left(219) + "\u2026" : content
+                            return content.length > 220 ? content.slice(0, 219) + "\u2026" : content
                         }
                         wrapMode: Text.Wrap
                         color: Theme.text

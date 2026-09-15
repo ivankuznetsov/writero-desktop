@@ -133,7 +133,14 @@ Dialog {
                           base: "http://localhost:11434" }
                     ]
                     onCurrentIndexChanged: {
-                        if (baseField.text === "" || baseField.text === model[currentIndex].base)
+                        if (currentIndex < 0 || !baseField)
+                            return
+                        const usesDefault = model.some(entry => entry.base === baseField.text)
+                        if (baseField.text === "" || usesDefault)
+                            baseField.text = model[currentIndex].base
+                    }
+                    Component.onCompleted: {
+                        if (baseField.text === "" && currentIndex >= 0)
                             baseField.text = model[currentIndex].base
                     }
                 }

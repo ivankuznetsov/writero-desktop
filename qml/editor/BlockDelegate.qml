@@ -621,7 +621,7 @@ Item {
                         Layout.fillWidth: true
                         text: {
                             const content = modelData.content || ""
-                            return (content.length > 70 ? content.left(69) + "\u2026" : content)
+                            return (content.length > 70 ? content.slice(0, 69) + "\u2026" : content)
                                    + "   " + (modelData.whodunnit || "")
                         }
                         color: Theme.text
@@ -696,7 +696,7 @@ Item {
                         Label {
                             text: {
                                 const content = modelData.content || ""
-                                return content.length > 80 ? content.left(79) + "\u2026" : content
+                                return content.length > 80 ? content.slice(0, 79) + "\u2026" : content
                             }
                             color: Theme.text
                             elide: Text.ElideRight

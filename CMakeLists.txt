@@ -140,6 +140,7 @@ qt_add_qml_module(writero_ui
         qml/settings/Providers.qml
         qml/settings/WriteroUsage.qml
         qml/sync/ConflictPanel.qml
+        qml/sync/ShareLinkDialog.qml
 )
 
 qt_add_executable(writero-desktop
