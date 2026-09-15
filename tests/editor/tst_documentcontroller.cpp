@@ -1,6 +1,8 @@
 #include <QtTest/QtTest>
 #include <QTextDocument>
 #include <QTextCursor>
+#include <QTemporaryDir>
+#include "storage/workspace.h"
 
 #include "document/documentsession.h"
 #include "editor/documentcontroller.h"
@@ -13,6 +15,24 @@ class TestDocumentController : public QObject
     Q_OBJECT
 
 private slots:
+    void bundleExportIncludesUnsavedEdits()
+    {
+        QTemporaryDir directory;
+        Workspace workspace;
+        QVERIFY(workspace.open(directory.path() + "/workspace"));
+        DocumentController controller;
+        controller.setWorkspace(&workspace);
+        QVERIFY(!controller.createDocument("Original").isEmpty());
+        controller.setBlockContent(0, "Latest draft");
+        const QString bundle = controller.exportBundle(directory.path() + "/exports");
+        QVERIFY(!bundle.isEmpty());
+        QString error;
+        const QString imported = workspace.importBundleFrom(directory.path() + "/exports", &error);
+        QVERIFY2(!imported.isEmpty(), qPrintable(error));
+        QCOMPARE(workspace.store()->loadDocument(imported).blocks.first().content,
+                 QString("Latest draft"));
+    }
+
     void blankDocumentHasOneBlock()
     {
         DocumentController controller;

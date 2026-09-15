@@ -50,6 +50,19 @@ Item {
             app.destroy()
         }
 
+        function test_closePreservesUnsavedDocumentAfterSaveFailure() {
+            const app = component("Main")
+            const workspace = findChild(app, "workspace")
+            const controller = findChild(app, "documentController")
+            verify(workspace !== null && controller !== null)
+            controller.setBlockContent(0, "Unsaved draft")
+            qaFixture.closeStore(workspace)
+            app.close()
+            verify(app.visible, "failed save must cancel window close")
+            verify(controller.dirty)
+            app.destroy()
+        }
+
         function test_shareDialogLoads() {
             const dialog = component("sync/ShareLinkDialog")
             dialog.open()

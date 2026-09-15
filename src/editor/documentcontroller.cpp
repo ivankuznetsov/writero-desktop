@@ -303,6 +303,8 @@ QString DocumentController::exportBundle(const QString &directory)
 {
     if (m_workspace == nullptr || !m_workspace->isReady())
         return {};
+    if (!saveIfDirty())
+        return {};
     const QUrl url(directory);
     const QString localPath = url.isLocalFile() ? url.toLocalFile() : directory;
     QString error;
