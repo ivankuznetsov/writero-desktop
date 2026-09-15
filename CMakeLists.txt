@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(writero-desktop
-    VERSION 0.1.1
+    VERSION 0.1.2
     DESCRIPTION "Native Writero desktop client"
     HOMEPAGE_URL "https://github.com/ivankuznetsov/writero-desktop"
     LANGUAGES CXX)
