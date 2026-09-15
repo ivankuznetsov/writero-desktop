@@ -337,7 +337,7 @@ bool WorkspaceStore::createDocument(const Document &document, QString *error)
 
 bool WorkspaceStore::saveDocument(const Document &document, const QVector<DocumentChange> &changes,
                                   const QVector<PendingOperation> &pendingOperations,
-                                  QString *error)
+                                  QString *error, const QVector<Revision> &importedRevisions)
 {
     if (!m_database.transaction()) {
         m_lastError = m_database.lastError().text();
@@ -463,6 +463,15 @@ bool WorkspaceStore::saveDocument(const Document &document, const QVector<Docume
     for (const DocumentChange &change : changes) {
         if (!insertRevision(change, document.id, error)) {
             m_database.rollback();
+            return false;
+        }
+    }
+
+    for (const Revision &revision : importedRevisions) {
+        if (!insertRevision(document.id, revision)) {
+            m_database.rollback();
+            if (error)
+                *error = m_lastError;
             return false;
         }
     }

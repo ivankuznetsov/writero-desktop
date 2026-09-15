@@ -73,10 +73,10 @@ public:
     bool createDocument(const Document &document, QString *error = nullptr);
 
     /// Saves document metadata, all blocks, the given changes, and any
-    /// pending cloud operations in one transaction.
+    /// pending cloud operations and imported history in one transaction.
     bool saveDocument(const Document &document, const QVector<DocumentChange> &changes,
                       const QVector<PendingOperation> &pendingOperations = {},
-                      QString *error = nullptr);
+                      QString *error = nullptr, const QVector<Revision> &importedRevisions = {});
 
     Document loadDocument(const QString &documentId, QString *error = nullptr);
 

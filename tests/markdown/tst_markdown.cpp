@@ -1,4 +1,5 @@
 #include <QtTest/QtTest>
+#include <QRandomGenerator>
 
 #include "markdown/markdown.h"
 
@@ -9,6 +10,91 @@ class TestMarkdown : public QObject
     Q_OBJECT
 
 private slots:
+    void codeRoundTrip_data()
+    {
+        QTest::addColumn<QString>("content");
+        QTest::newRow("leading-indentation") << QStringLiteral("    print('é雪')");
+        QTest::newRow("blank-lines") << QStringLiteral("\n\nvalue\n\n");
+        QTest::newRow("empty") << QString();
+        QTest::newRow("embedded-fence") << QStringLiteral("before\n```\nafter");
+    }
+
+    void codeRoundTrip()
+    {
+        QFETCH(QString, content);
+        const Block original = Block::create(BlockType::Code, content);
+        const auto blocks = markdown::parse(markdown::serialize({original}));
+        QCOMPARE(blocks.size(), 1);
+        QCOMPARE(blocks.first().type, BlockType::Code);
+        QCOMPARE(blocks.first().content, content);
+    }
+
+    void closingFenceMustNotHaveInfoString()
+    {
+        const auto blocks = markdown::parse(QStringLiteral("```md\n```python\nbody\n```"));
+        QCOMPARE(blocks.size(), 1);
+        QCOMPARE(blocks.first().content, QStringLiteral("```python\nbody"));
+    }
+
+    void recognizesTildeAndLongFences()
+    {
+        const auto blocks = markdown::parse(QStringLiteral("~~~~cpp\nx\n~~~\ny\n~~~~"));
+        QCOMPARE(blocks.size(), 1);
+        QCOMPARE(blocks.first().type, BlockType::Code);
+        QCOMPARE(blocks.first().content, QStringLiteral("x\n~~~\ny"));
+        QCOMPARE(blocks.first().language(), QStringLiteral("cpp"));
+        QVERIFY(markdown::looksLikeMarkdown(QStringLiteral("~~~~cpp\nx\n~~~~")));
+    }
+
+    void dividerAfterListIsSeparateBlock()
+    {
+        const auto blocks = markdown::parse(QStringLiteral("- one\n---\nafter"));
+        QCOMPARE(blocks.size(), 3);
+        QCOMPARE(blocks.at(1).type, BlockType::Divider);
+    }
+
+    void mediaRoundTrip()
+    {
+        Block media = Block::create(BlockType::Media);
+        media.setMediaAlt(QStringLiteral("雪 [cat]"));
+        media.setMediaSource(QStringLiteral("https://example.test/my image(1).png"));
+        const auto blocks = markdown::parse(markdown::serialize({media}));
+        QCOMPARE(blocks.size(), 1);
+        QCOMPARE(blocks.first().type, BlockType::Media);
+        QCOMPARE(blocks.first().mediaAlt(), media.mediaAlt());
+        QCOMPARE(blocks.first().mediaSource(), media.mediaSource());
+    }
+
+    void stressCodeRoundTrips()
+    {
+        QRandomGenerator random(45106);
+        const QString alphabet = QStringLiteral("abc雪é\n\t `~[]()#");
+        for (int iteration = 0; iteration < 2000; ++iteration) {
+            QString content;
+            const int length = random.bounded(512);
+            for (int j = 0; j < length; ++j)
+                content += alphabet.at(random.bounded(int(alphabet.size())));
+            const auto blocks = markdown::parse(markdown::serialize({Block::create(BlockType::Code, content)}));
+            QCOMPARE(blocks.size(), 1);
+            QCOMPARE(blocks.first().type, BlockType::Code);
+            QCOMPARE(blocks.first().content, content);
+        }
+    }
+
+    void goldenTableLinksAndNestedListsRoundTrip()
+    {
+        const QString original = QStringLiteral(
+            "| Name | 値 |\n| --- | --- |\n| [café](https://example.test/a?x=1&y=2) | **雪** |\n\n"
+            "- parent\n  1. child\n  2. second\n\n> quoted **text**\n");
+        const auto blocks = markdown::parse(original);
+        const auto roundTrip = markdown::parse(markdown::serialize(blocks));
+        QCOMPARE(roundTrip.size(), blocks.size());
+        for (int i = 0; i < blocks.size(); ++i) {
+            QCOMPARE(roundTrip.at(i).type, blocks.at(i).type);
+            QCOMPARE(roundTrip.at(i).content, blocks.at(i).content);
+        }
+    }
+
     void parsesHeadingsAndCode()
     {
         const BlockList blocks = markdown::parse(

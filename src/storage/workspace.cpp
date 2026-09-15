@@ -303,13 +303,16 @@ QString Workspace::importBundleFrom(const QString &directory, QString *error)
             block.mediaId = 0;
     }
 
-    if (!m_store.saveDocument(document, {}, {}, error))
-        return {};
-    for (const Revision &revision : contents.revisions) {
-        Revision remapped = revision;
-        remapped.blockId = idMap.value(revision.blockId, revision.blockId);
-        importRevision(document.id, remapped);
+    QVector<Revision> revisions;
+    // Export stores newest first. Insert oldest first to retain the ordering
+    // of revisions sharing the same timestamp when SQLite assigns fresh IDs.
+    for (auto it = contents.revisions.crbegin(); it != contents.revisions.crend(); ++it) {
+        Revision remapped = *it;
+        remapped.blockId = idMap.value(it->blockId, it->blockId);
+        revisions.append(remapped);
     }
+    if (!m_store.saveDocument(document, {}, {}, error, revisions))
+        return {};
 
     m_documents.refresh();
     return document.id;

@@ -3,7 +3,13 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QTemporaryDir>
+#include <QUrl>
+#include <QImage>
+#include <QBuffer>
 
 #include "document/documentio.h"
 #include "markdown/markdown.h"
@@ -67,6 +73,141 @@ class TestDocumentIo : public QObject
     Q_OBJECT
 
 private slots:
+    void markdownFileResolvesRelativeImages()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("doc.md"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("# Unicode title\n\n![local](images/cat.png)\n");
+        file.close();
+        const auto blocks = documentio::importMarkdownFile(path);
+        QCOMPARE(blocks.size(), 2);
+        QCOMPARE(blocks.first().type, BlockType::Heading);
+        QCOMPARE(blocks.last().mediaSource(),
+                 QUrl::fromLocalFile(dir.filePath(QStringLiteral("images/cat.png"))).toString());
+    }
+
+    void markdownFileHandlesUtf8Bom()
+    {
+        QTemporaryDir dir;
+        QFile file(dir.filePath(QStringLiteral("bom.md")));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(QByteArray::fromHex("efbbbf") + "# Title\n");
+        file.close();
+        const auto blocks = documentio::importMarkdownFile(file.fileName());
+        QCOMPARE(blocks.size(), 1);
+        QCOMPARE(blocks.first().type, BlockType::Heading);
+    }
+
+    void markdownFileRejectsInvalidUtf8_data()
+    {
+        QTest::addColumn<QByteArray>("bytes");
+        QTest::newRow("invalid-sequence") << QByteArray::fromHex("6869ffc328");
+        QTest::newRow("truncated-sequence") << QByteArray::fromHex("6869e282");
+    }
+
+    void markdownFileRejectsInvalidUtf8()
+    {
+        QFETCH(QByteArray, bytes);
+        QTemporaryDir dir;
+        QFile file(dir.filePath(QStringLiteral("bad.md")));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(bytes);
+        file.close();
+        QString error;
+        QVERIFY(documentio::importMarkdownFile(file.fileName(), &error).isEmpty());
+        QVERIFY(!error.isEmpty());
+    }
+
+    void pdfExportRejectsDirectoryDestination()
+    {
+        QTemporaryDir dir;
+        QString error;
+        QVERIFY(!documentio::exportPdf(makeDocument(), dir.path(), {}, &error));
+        QVERIFY(!error.isEmpty());
+    }
+
+    void bundleMalformedManifest_data()
+    {
+        QTest::addColumn<QString>("mutation");
+        for (const char *name : {"version", "blocks-type", "duplicate-block", "unknown-type",
+                                 "missing-media", "byte-size", "media-reference"})
+            QTest::newRow(name) << QString::fromLatin1(name);
+    }
+
+    void bundleMalformedManifest()
+    {
+        QFETCH(QString, mutation);
+        QTemporaryDir dir;
+        QVERIFY(documentio::exportBundle(dir.path(), makeBundle()));
+        QFile manifest(dir.filePath(QStringLiteral("manifest.json")));
+        QVERIFY(manifest.open(QIODevice::ReadOnly));
+        auto root = QJsonDocument::fromJson(manifest.readAll()).object();
+        manifest.close();
+        if (mutation == QLatin1String("version"))
+            root["version"] = 999;
+        if (mutation == QLatin1String("blocks-type"))
+            root["blocks"] = QStringLiteral("corrupt");
+        if (mutation == QLatin1String("duplicate-block")) {
+            auto blocks = root["blocks"].toArray();
+            blocks.append(blocks.first());
+            root["blocks"] = blocks;
+        }
+        if (mutation == QLatin1String("unknown-type")) {
+            auto blocks = root["blocks"].toArray();
+            auto block = blocks[0].toObject();
+            block["type"] = QStringLiteral("unknown");
+            blocks[0] = block;
+            root["blocks"] = blocks;
+        }
+        if (mutation == QLatin1String("missing-media"))
+            root["media"] = QJsonArray();
+        if (mutation == QLatin1String("byte-size")) {
+            auto media = root["media"].toArray();
+            auto item = media[0].toObject();
+            item["byte_size"] = -1;
+            media[0] = item;
+            root["media"] = media;
+        }
+        if (mutation == QLatin1String("media-reference")) {
+            auto blocks = root["blocks"].toArray();
+            auto block = blocks.last().toObject();
+            block["media_sha"] = QStringLiteral("bad");
+            blocks[blocks.size() - 1] = block;
+            root["blocks"] = blocks;
+        }
+        QVERIFY(manifest.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        manifest.write(QJsonDocument(root).toJson());
+        manifest.close();
+        documentio::BundleContents output;
+        QString error;
+        QVERIFY(!documentio::importBundle(dir.path(), &output, &error));
+        QVERIFY(!error.isEmpty());
+    }
+
+    void failedBundleImportPreservesOutput()
+    {
+        QTemporaryDir dir;
+        const auto original = makeBundle();
+        QVERIFY(documentio::exportBundle(dir.path(), original));
+        QFile media(dir.filePath(QStringLiteral("media/") + original.media.first().sha256));
+        QVERIFY(media.remove());
+        documentio::BundleContents output;
+        output.document.title = QStringLiteral("Keep original");
+        QVERIFY(!documentio::importBundle(dir.path(), &output));
+        QCOMPARE(output.document.title, QStringLiteral("Keep original"));
+    }
+
+    void bundleExportRejectsInvalidHashWithoutEscapingDirectory()
+    {
+        QTemporaryDir dir;
+        auto contents = makeBundle();
+        contents.media.first().sha256 = QStringLiteral("../../escaped");
+        QVERIFY(!documentio::exportBundle(dir.filePath(QStringLiteral("bundle")), contents));
+        QVERIFY(!QFile::exists(dir.filePath(QStringLiteral("escaped"))));
+    }
+
     void markdownExportWritesBlocks()
     {
         QTemporaryDir dir;
@@ -110,6 +251,28 @@ private slots:
         QVERIFY(file.open(QIODevice::ReadOnly));
         const QByteArray header = file.read(5);
         QCOMPARE(header, QByteArray("%PDF-"));
+    }
+
+    void pdfEmbedsImageBytes()
+    {
+        QTemporaryDir dir;
+        Document document;
+        document.title = QStringLiteral("Image PDF");
+        document.blocks = {Block::create(BlockType::Media)};
+        QImage image(8, 8, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        QByteArray png;
+        QBuffer buffer(&png);
+        QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(image.save(&buffer, "PNG"));
+        documentio::MediaAccess access;
+        access.bytes = [png](const Block &) { return png; };
+        access.mimeType = [](const Block &) { return QStringLiteral("image/png"); };
+        const QString path = dir.filePath(QStringLiteral("image.pdf"));
+        QVERIFY(documentio::exportPdf(document, path, access));
+        QFile pdf(path);
+        QVERIFY(pdf.open(QIODevice::ReadOnly));
+        QVERIFY(pdf.readAll().contains("/Subtype /Image"));
     }
 
     void bundleRoundTripsContentHistoryAndMedia()
