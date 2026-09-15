@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 
 #include <QJsonArray>
+#include <QImage>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTcpServer>
@@ -49,20 +50,23 @@ public:
                 if (buffer->size() < headerEnd + 4 + contentLength)
                     return;
 
+                lastRequest = *buffer;
                 lastBody = QJsonDocument::fromJson(buffer->mid(headerEnd + 4, contentLength))
                                .object();
                 requestCount++;
+                if (holdRequests && !path.contains(QLatin1String("capabilities")))
+                    return;
 
                 if (method == "GET" && path.startsWith(QLatin1String("/api/desktop/v1/capabilities"))) {
                     respond(socket, 200, capabilitiesBody());
                 } else if (method == "POST"
                            && path.startsWith(QLatin1String("/api/desktop/v1/media"))) {
                     respond(socket, 201,
-                            QJsonObject{{QStringLiteral("signed_id"), QStringLiteral("sig-1")}});
+                            QJsonObject{{QStringLiteral("signed_id"), uploadSignedId}});
                 } else if (method == "GET"
                            && path.contains(QLatin1String("/ai_jobs/"))
                            && path.endsWith(QLatin1String("/media"))) {
-                    respondRaw(socket, 200, "image/png", QByteArrayLiteral("generated-png"));
+                    respondRaw(socket, 200, mediaContentType, QByteArrayLiteral("generated-png"));
                 } else if (method == "POST"
                            && path.startsWith(QLatin1String("/api/desktop/v1/ai_jobs"))) {
                     lastJobBody = lastBody;
@@ -80,6 +84,10 @@ public:
         return QStringLiteral("http://127.0.0.1:%1").arg(serverPort());
     }
 
+    bool holdRequests = false;
+    QByteArray lastRequest;
+    QString uploadSignedId = QStringLiteral("sig-1");
+    QByteArray mediaContentType = "image/png";
     QJsonObject lastBody;
     QJsonObject lastJobBody;
     int requestCount = 0;
@@ -191,6 +199,135 @@ private slots:
     {
         AccountSession cleanup;
         cleanup.clearLocalSession();
+    }
+
+    void cancellationOwnsEveryRequestStage_data()
+    {
+        QTest::addColumn<QString>("stage");
+        QTest::newRow("submit") << QStringLiteral("submit");
+        QTest::newRow("upload") << QStringLiteral("upload");
+        QTest::newRow("download") << QStringLiteral("download");
+    }
+
+    void cancellationOwnsEveryRequestStage()
+    {
+        QFETCH(QString, stage);
+        StubHostedApi api;
+        QVERIFY(api.listen());
+        AccountSession account;
+        QVERIFY(account.importToken(api.baseUrl(), QStringLiteral("token")));
+        QTRY_VERIFY(account.isConnected());
+        api.holdRequests = true;
+        QTemporaryDir dir;
+        QFile file(dir.filePath(QStringLiteral("reference.png")));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("png");
+        file.close();
+        WriteroProvider provider(&account);
+        QSignalSpy failed(&provider, &WriteroProvider::failed);
+        QSignalSpy uploadFailed(&provider, &WriteroProvider::mediaUploadFailed);
+        if (stage == QLatin1String("submit"))
+            provider.submit(QStringLiteral("op"), QStringLiteral("rewrite"), QStringLiteral("model"), {}, {});
+        else if (stage == QLatin1String("upload"))
+            provider.uploadMedia(QStringLiteral("op"), file.fileName());
+        else
+            provider.fetchResultMedia(QStringLiteral("op"), 1);
+        QVERIFY(provider.isRunning(QStringLiteral("op")));
+        provider.cancel(QStringLiteral("op"));
+        QVERIFY(!provider.isRunning(QStringLiteral("op")));
+        QTest::qWait(50);
+        QCOMPARE(failed.count(), 0);
+        QCOMPARE(uploadFailed.count(), 0);
+    }
+
+    void uploadRequiresSignedId()
+    {
+        StubHostedApi api;
+        QVERIFY(api.listen());
+        api.uploadSignedId.clear();
+        AccountSession account;
+        QVERIFY(account.importToken(api.baseUrl(), QStringLiteral("token")));
+        QTRY_VERIFY(account.isConnected());
+        QTemporaryDir dir;
+        QFile file(dir.filePath(QStringLiteral("reference.png")));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("png");
+        file.close();
+        WriteroProvider provider(&account);
+        QSignalSpy failed(&provider, &WriteroProvider::mediaUploadFailed);
+        QSignalSpy uploaded(&provider, &WriteroProvider::mediaUploaded);
+        provider.uploadMedia(QStringLiteral("op"), file.fileName());
+        QTRY_COMPARE(failed.count(), 1);
+        QCOMPARE(uploaded.count(), 0);
+    }
+
+    void webpUploadPreservesMimeType()
+    {
+        StubHostedApi api;
+        QVERIFY(api.listen());
+        AccountSession account;
+        QVERIFY(account.importToken(api.baseUrl(), QStringLiteral("token")));
+        QTRY_VERIFY(account.isConnected());
+        QTemporaryDir dir;
+        QFile file(dir.filePath(QStringLiteral("reference.webp")));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QImage image(2, 2, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        QVERIFY(image.save(&file, "WEBP"));
+        file.close();
+        WriteroProvider provider(&account);
+        QSignalSpy uploaded(&provider, &WriteroProvider::mediaUploaded);
+        provider.uploadMedia(QStringLiteral("op"), file.fileName());
+        QTRY_COMPARE(uploaded.count(), 1);
+        QVERIFY(api.lastRequest.toLower().contains("content-type: image/webp"));
+    }
+
+    void downloadedErrorPageIsNotAnImage()
+    {
+        StubHostedApi api;
+        QVERIFY(api.listen());
+        api.mediaContentType = "text/html";
+        AccountSession account;
+        QVERIFY(account.importToken(api.baseUrl(), QStringLiteral("token")));
+        QTRY_VERIFY(account.isConnected());
+        WriteroProvider provider(&account);
+        QSignalSpy failed(&provider, &WriteroProvider::failed);
+        QSignalSpy images(&provider, &WriteroProvider::imageFinished);
+        provider.fetchResultMedia(QStringLiteral("op"), 1);
+        QTRY_COMPARE(failed.count(), 1);
+        QCOMPARE(images.count(), 0);
+    }
+
+    void replacingAccountCancelsHostedControllerWork()
+    {
+        StubHostedApi api;
+        QVERIFY(api.listen());
+        QTemporaryDir dir;
+        Workspace workspace;
+        QVERIFY(workspace.open(dir.path()));
+        DocumentController document;
+        document.setWorkspace(&workspace);
+        document.createDocument(QStringLiteral("Hosted account lifetime"));
+        document.setBlockContent(0, QStringLiteral("Source text"));
+        AccountSession account;
+        QVERIFY(account.importToken(api.baseUrl(), QStringLiteral("token")));
+        QTRY_VERIFY(account.isConnected());
+        AiController ai;
+        ai.setWorkspace(&workspace);
+        ai.setDocument(&document);
+        ai.setAccount(&account);
+        ai.runRewrite(0, QStringLiteral("writero"), QStringLiteral("google/gemini-3.6-flash"),
+                      QStringLiteral("shorten"));
+        QVERIFY(ai.busy());
+        ai.setAccount(nullptr);
+        QVERIFY(!ai.busy());
+        QCOMPARE(ai.results().first().toMap().value(QStringLiteral("status")).toString(),
+                 QStringLiteral("failed"));
+        QTest::qWait(150);
+        QCOMPARE(ai.results().first().toMap().value(QStringLiteral("status")).toString(),
+                 QStringLiteral("failed"));
+        QCOMPARE(document.blocks()->get(0).value(QStringLiteral("content")).toString(),
+                 QStringLiteral("Source text"));
     }
 
     void providerSubmitsTransientContext()
