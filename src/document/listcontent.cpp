@@ -81,8 +81,21 @@ QString continuationMarker(const QString &line)
     static const QRegularExpression ordered(QStringLiteral("^(\\d+)\\.$"));
     const auto orderedMatch = ordered.match(marker);
     if (orderedMatch.hasMatch()) {
-        const int number = orderedMatch.captured(1).toInt();
-        return indent + QString::number(number + 1) + QStringLiteral(". ");
+        // Markers are user text, not machine-sized integers. Increment their
+        // decimal representation so long list numbers cannot wrap or reset.
+        QString number = orderedMatch.captured(1);
+        while (number.size() > 1 && number.front() == QLatin1Char('0'))
+            number.remove(0, 1);
+        qsizetype digit = number.size() - 1;
+        while (digit >= 0 && number.at(digit) == QLatin1Char('9')) {
+            number[digit] = QLatin1Char('0');
+            --digit;
+        }
+        if (digit < 0)
+            number.prepend(QLatin1Char('1'));
+        else
+            number[digit] = QChar(number.at(digit).unicode() + 1);
+        return indent + number + QStringLiteral(". ");
     }
     return indent + marker + QStringLiteral(" ");
 }

@@ -68,7 +68,9 @@ public:
     bool undo();
     bool redo();
 
-    // --- Remote application (no journal, undo, or dirty marking) ---
+    // --- Remote application (no journal or dirty marking) ---
+    // Remote mutations invalidate local history: its snapshots and indices
+    // describe the previous remote baseline and cannot safely be replayed.
 
     void applyRemoteTitle(const QString &title);
     void applyRemoteUpdate(const QString &blockId, const Block &block);
@@ -108,16 +110,20 @@ private:
 
     void pushChange(DocumentChange change, bool coalesce);
     void recordJournalOnly(const DocumentChange &change);
+    void appendTrailingEmptyBlock(const QString &source, bool includeInUndo);
+    void groupUndoSince(qsizetype first);
+    void invalidateHistory();
     bool canCoalesce(const DocumentChange &previous, const DocumentChange &next) const;
     DocumentChange invert(const DocumentChange &change) const;
 
     void setDirty(bool dirty);
 
     Document m_document;
-    QVector<DocumentChange> m_undoStack;
-    QVector<DocumentChange> m_redoStack;
+    QVector<QVector<DocumentChange>> m_undoStack;
+    QVector<QVector<DocumentChange>> m_redoStack;
     QVector<DocumentChange> m_journal;
     QElapsedTimer m_sinceLastChange;
+    bool m_lastChangeCoalescible = false;
     bool m_dirty = false;
     bool m_loading = false;
 };
