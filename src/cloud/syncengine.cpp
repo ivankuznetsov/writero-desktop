@@ -111,10 +111,23 @@ SyncEngine::SyncEngine(QObject *parent)
             });
 }
 
+void SyncEngine::cancelSync()
+{
+    m_client.cancelRequests();
+    m_stage = Stage::Idle;
+    m_inFlightOperations.clear();
+    m_remoteContentVersions.clear();
+    m_remoteMediaVersions.clear();
+    m_historyRemoteBlockId.clear();
+    setBusy(false);
+    emit remoteHistoryChanged();
+}
+
 void SyncEngine::setWorkspace(Workspace *workspace)
 {
     if (m_workspace == workspace)
         return;
+    cancelSync();
     m_workspace = workspace;
     emit changed();
 }
@@ -123,15 +136,16 @@ void SyncEngine::setAccount(AccountSession *account)
 {
     if (m_account == account)
         return;
+    cancelSync();
     if (m_account)
         m_account->disconnect(this);
     m_account = account;
     m_client.setAccount(account);
     if (m_account) {
         connect(m_account, &AccountSession::changed, this, [this] {
-            if (!m_account || m_account->isConnected() || !m_busy)
+            if (!m_account || m_account->isConnected())
                 return;
-            setBusy(false);
+            cancelSync();
             setError(QStringLiteral("Signed out. Local documents and queued changes are kept."));
             const bool linked = m_document
                 && !m_document->session().document().cloudId.isEmpty();
@@ -145,9 +159,13 @@ void SyncEngine::setDocument(DocumentController *document)
 {
     if (m_document == document)
         return;
+    cancelSync();
+    if (m_document)
+        m_document->disconnect(this);
     m_document = document;
     if (m_document) {
         connect(m_document, &DocumentController::loaded, this, [this] {
+            cancelSync();
             const Document &doc = m_document->session().document();
             m_cloudId = doc.cloudId;
             m_state = m_cloudId.isEmpty() ? QStringLiteral("local") : doc.cloudState;
@@ -230,6 +248,8 @@ bool SyncEngine::accountMatchesDocument(QString *message) const
 
 void SyncEngine::connectDocument()
 {
+    if (m_busy)
+        return;
     if (!m_workspace || !m_workspace->isReady() || !m_document || !m_account) {
         setError(QStringLiteral("Open a document and sign in first."));
         return;
@@ -266,7 +286,7 @@ void SyncEngine::connectDocument()
 void SyncEngine::handleDocumentCreated(const QJsonObject &body)
 {
     const QJsonObject document = body.value(QStringLiteral("document")).toObject();
-    const QString id = document.value(QStringLiteral("id")).toString();
+    const QString id = document.value(QStringLiteral("id")).toVariant().toString();
     if (id.isEmpty()) {
         setError(QStringLiteral("The server did not return a document id."));
         setBusy(false);
@@ -500,7 +520,7 @@ void SyncEngine::onMutationsApplied(const QJsonObject &body)
         // The attach mutation was acknowledged; retire its pending operation.
         m_workspace->store()->deletePendingOperation(m_document->documentId(),
                                                      m_inFlightOperations.first().operationId);
-        const qint64 cursor = body.value(QStringLiteral("cursor")).toVariant().toLongLong();
+        const qint64 cursor = m_document->session().document().syncCursor;
         const qint64 generation = body.value(QStringLiteral("generation")).toVariant().toLongLong();
         const Document &document = m_document->session().document();
         m_document->session().setCloudState(document.cloudId, QStringLiteral("connected"), cursor,
@@ -534,7 +554,7 @@ void SyncEngine::applyMutationResults(const QJsonObject &body)
         const QString localId = it->payload.value(QStringLiteral("local_block_id")).toString();
         const QJsonObject block = result.value(QStringLiteral("block")).toObject();
         if (!block.isEmpty() && !localId.isEmpty()) {
-            const QString remoteId = block.value(QStringLiteral("id")).toString();
+            const QString remoteId = block.value(QStringLiteral("id")).toVariant().toString();
             if (m_workspace->store()->remoteIdForLocal(m_document->documentId(), localId).isEmpty())
                 m_workspace->store()->mapBlock(m_document->documentId(), localId, remoteId);
             m_workspace->store()->setRemoteVersion(
@@ -558,7 +578,7 @@ void SyncEngine::applyMutationResults(const QJsonObject &body)
         m_workspace->store()->deletePendingOperation(m_document->documentId(), operationId);
     }
 
-    const qint64 cursor = body.value(QStringLiteral("cursor")).toVariant().toLongLong();
+    const qint64 cursor = m_document->session().document().syncCursor;
     const qint64 generation = body.value(QStringLiteral("generation")).toVariant().toLongLong();
     const Document &document = m_document->session().document();
     m_document->session().setCloudState(document.cloudId, QStringLiteral("connected"), cursor,
@@ -622,16 +642,34 @@ void SyncEngine::onChangesReceived(const QJsonObject &body)
         return;
     }
 
+    // Edits made while the request was in flight must enter the durable queue
+    // before reconciliation decides which remote changes can replace local work.
+    if (!m_document->saveIfDirty()) {
+        setError(QStringLiteral("Could not save local edits before syncing."));
+        setState(QStringLiteral("error"));
+        setBusy(false);
+        m_stage = Stage::Idle;
+        return;
+    }
     const ReconcileContext context = reconcileContext();
     for (const QJsonValue &value : body.value(QStringLiteral("changes")).toArray())
         ChangeReconciler::applyChange(value.toObject(), context);
 
     const qint64 nextCursor = body.value(QStringLiteral("next_cursor")).toVariant().toLongLong();
     const Document &document = m_document->session().document();
+    const qint64 previousCursor = document.syncCursor;
     m_document->session().setCloudState(m_cloudId, QStringLiteral("connected"), nextCursor,
                                         generation, document.syncTitleVersion);
-    m_workspace->store()->updateDocumentSync(m_document->documentId(), m_cloudId,
-                                             QStringLiteral("connected"), nextCursor, generation);
+    QString saveError;
+    if (!m_workspace->store()->saveDocument(m_document->session().document(), {}, {}, &saveError)) {
+        m_document->session().setCloudState(m_cloudId, QStringLiteral("connected"), previousCursor,
+                                            generation, document.syncTitleVersion);
+        setError(saveError);
+        setState(QStringLiteral("error"));
+        setBusy(false);
+        m_stage = Stage::Idle;
+        return;
+    }
 
     if (body.value(QStringLiteral("has_more")).toBool()) {
         m_client.fetchChanges(m_cloudId, nextCursor, generation);
@@ -648,7 +686,8 @@ void SyncEngine::resnapshot()
     }
     m_stage = Stage::Snapshotting;
     setState(QStringLiteral("syncing"));
-    m_snapshotBlocks.clear();
+    m_snapshotBlocks = {};
+    m_snapshotResults = {};
     m_snapshotLockVersions.clear();
     m_snapshotPage = 1;
     m_snapshotTotalPages = 1;
@@ -659,35 +698,41 @@ void SyncEngine::onSnapshotReceived(const QJsonObject &body)
 {
     for (const QJsonValue &value : body.value(QStringLiteral("blocks")).toArray()) {
         const QJsonObject block = value.toObject();
-        const Block parsed = ChangeReconciler::blockFromJson(block, newId());
-        m_snapshotBlocks.append(parsed);
-        const QString remoteId = block.value(QStringLiteral("id")).toString();
+        m_snapshotBlocks.append(block);
+        const QString remoteId = block.value(QStringLiteral("id")).toVariant().toString();
         m_snapshotLockVersions.insert(remoteId, block.value(QStringLiteral("lock_version")).toInt());
     }
+
+    for (const QJsonValue &result : body.value(QStringLiteral("results")).toArray())
+        m_snapshotResults.append(result);
 
     const QJsonObject page = body.value(QStringLiteral("page")).toObject();
     const int number = page.value(QStringLiteral("number")).toInt();
     m_snapshotTotalPages = page.value(QStringLiteral("total_pages")).toInt();
     if (number < m_snapshotTotalPages) {
         const QString leaseId = body.value(QStringLiteral("lease")).toObject()
-                                    .value(QStringLiteral("id")).toString();
+                                    .value(QStringLiteral("id")).toVariant().toString();
         m_snapshotPage = number + 1;
         m_client.fetchSnapshotPage(m_cloudId, leaseId, m_snapshotPage);
         return;
     }
 
     // Rebuild a single snapshot body from the accumulated pages.
-    QJsonArray blocks;
-    for (const Block &block : m_snapshotBlocks) {
-        QJsonObject json = QJsonObject::fromVariantMap(block.toJson());
-        json.insert(QStringLiteral("block_type"), blocktype::toKey(block.type));
-        blocks.append(json);
-    }
     QJsonObject combined = body;
-    combined.insert(QStringLiteral("blocks"), blocks);
+    combined.insert(QStringLiteral("blocks"), m_snapshotBlocks);
+    combined.insert(QStringLiteral("results"), m_snapshotResults);
     combined.insert(QStringLiteral("document"), body.value(QStringLiteral("document")));
     combined.insert(QStringLiteral("watermark"), body.value(QStringLiteral("watermark")));
 
+    // Edits made while the request was in flight must enter the durable queue
+    // before reconciliation decides which remote changes can replace local work.
+    if (!m_document->saveIfDirty()) {
+        setError(QStringLiteral("Could not save local edits before syncing."));
+        setState(QStringLiteral("error"));
+        setBusy(false);
+        m_stage = Stage::Idle;
+        return;
+    }
     const ReconcileContext context = reconcileContext();
     ChangeReconciler::applySnapshot(combined, context);
 
@@ -704,10 +749,10 @@ void SyncEngine::onSnapshotReceived(const QJsonObject &body)
     for (const Block &local : m_document->session().document().blocks) {
         const QString remoteId =
             m_workspace->store()->remoteIdForLocal(m_document->documentId(), local.id);
-        if (remoteId.isEmpty())
+        if (remoteId.isEmpty() || context.pendingBlockIds.contains(local.id))
             continue;
         const int version = m_snapshotLockVersions.value(remoteId, 0);
-        if (version > 0)
+        if (m_snapshotLockVersions.contains(remoteId))
             m_workspace->store()->setRemoteVersion(m_document->documentId(), local.id, version);
     }
 
@@ -719,7 +764,8 @@ void SyncEngine::onSnapshotReceived(const QJsonObject &body)
     m_workspace->store()->saveDocument(m_document->session().document(), {}, {});
     refreshSummary();
 
-    if (!m_workspace->store()->pendingOperations(m_document->documentId()).isEmpty())
+    if (m_workspace->store()->conflictCount(m_document->documentId()) == 0
+        && !m_workspace->store()->pendingOperations(m_document->documentId()).isEmpty())
         pushNextBatch();
     else
         finishSync();
@@ -728,7 +774,7 @@ void SyncEngine::onSnapshotReceived(const QJsonObject &body)
 void SyncEngine::finishSync()
 {
     const Document &document = m_document->session().document();
-    if (document.cloudState == QLatin1String("conflict")) {
+    if (m_workspace->store()->conflictCount(document.id) > 0) {
         setState(QStringLiteral("conflict"));
     } else {
         setState(QStringLiteral("synced"));
@@ -765,6 +811,7 @@ void SyncEngine::syncNow()
 
 void SyncEngine::disconnectDocument()
 {
+    cancelSync();
     if (!m_document)
         return;
     const Document &document = m_document->session().document();

@@ -13,7 +13,7 @@ QString remoteIdOf(const QJsonObject &change)
         .value(QStringLiteral("block"))
         .toObject()
         .value(QStringLiteral("id"))
-        .toString();
+        .toVariant().toString();
 }
 
 } // namespace
@@ -73,7 +73,7 @@ void ChangeReconciler::applySnapshot(const QJsonObject &snapshot, const Reconcil
 
     for (const QJsonValue &value : remoteBlocks) {
         const QJsonObject blockJson = value.toObject();
-        const QString remoteId = blockJson.value(QStringLiteral("id")).toString();
+        const QString remoteId = blockJson.value(QStringLiteral("id")).toVariant().toString();
         if (remoteId.isEmpty())
             continue;
         remoteIds.insert(remoteId);
@@ -117,8 +117,26 @@ void ChangeReconciler::applySnapshot(const QJsonObject &snapshot, const Reconcil
     for (const Block &local : context.session->document().blocks) {
         if (!context.pendingBlockIds.contains(local.id))
             continue;
-        if (context.store->remoteIdForLocal(context.documentId, local.id).isEmpty())
+        const QString remoteId = context.store->remoteIdForLocal(context.documentId, local.id);
+        if (remoteId.isEmpty()) {
             merged.append(local);
+        } else if (!remoteIds.contains(remoteId)) {
+            merged.append(local);
+            recordConflict(context, QStringLiteral("block_destroy"), local.id, local.content,
+                           {}, {}, snapshot.value(QStringLiteral("watermark")).toObject()
+                                         .value(QStringLiteral("sequence")).toVariant().toLongLong(), 0);
+        }
+    }
+
+    for (const QJsonValue &value : snapshot.value(QStringLiteral("results")).toArray()) {
+        const QJsonObject result = value.toObject();
+        applyResultChange({
+            {QStringLiteral("event"), QStringLiteral("result_%1_result")
+                 .arg(result.value(QStringLiteral("kind")).toString())},
+            {QStringLiteral("created_at"), result.value(QStringLiteral("created_at"))},
+            {QStringLiteral("payload"), QJsonObject{{QStringLiteral("result"),
+                 result.value(QStringLiteral("attributes"))}}},
+        }, context);
     }
 
     const QJsonObject document = snapshot.value(QStringLiteral("document")).toObject();
@@ -147,11 +165,11 @@ void ChangeReconciler::applyResultChange(const QJsonObject &change, const Reconc
                                    .toObject()
                                    .value(QStringLiteral("result"))
                                    .toObject();
-    const QString remoteId = result.value(QStringLiteral("id")).toString();
+    const QString remoteId = result.value(QStringLiteral("id")).toVariant().toString();
     if (remoteId.isEmpty())
         return;
 
-    const QString remoteBlockId = result.value(QStringLiteral("block_id")).toString();
+    const QString remoteBlockId = result.value(QStringLiteral("block_id")).toVariant().toString();
     const QString localBlockId =
         context.store->localIdForRemote(context.documentId, remoteBlockId);
     if (localBlockId.isEmpty())
@@ -169,8 +187,10 @@ void ChangeReconciler::applyResultChange(const QJsonObject &change, const Reconc
     else
         return;
 
+    // Editorial result tables have independent numeric primary keys.
+    const QString resultKey = kind + QLatin1Char(':') + remoteId;
     WorkspaceStore::AiResultRecord record;
-    record.id = context.store->aiResultIdForRemote(context.documentId, remoteId);
+    record.id = context.store->aiResultIdForRemote(context.documentId, resultKey);
     if (record.id.isEmpty())
         record.id = newId();
     record.documentId = context.documentId;
@@ -180,7 +200,7 @@ void ChangeReconciler::applyResultChange(const QJsonObject &change, const Reconc
     record.model = result.value(QStringLiteral("ai_model")).toString();
     record.status = result.value(QStringLiteral("status")).toString();
     record.error = result.value(QStringLiteral("error_message")).toString();
-    record.remoteId = remoteId;
+    record.remoteId = resultKey;
     if (kind == QLatin1String("image_explanation"))
         record.content = result.value(QStringLiteral("explanation")).toString();
     else if (kind != QLatin1String("image_generation"))
@@ -206,7 +226,7 @@ void ChangeReconciler::applyChange(const QJsonObject &change, const ReconcileCon
 
     if (event == QLatin1String("block_create") || event == QLatin1String("block_update")) {
         const QJsonObject blockJson = payload.value(QStringLiteral("block")).toObject();
-        const QString remoteId = blockJson.value(QStringLiteral("id")).toString();
+        const QString remoteId = blockJson.value(QStringLiteral("id")).toVariant().toString();
         if (remoteId.isEmpty())
             return;
 
@@ -218,6 +238,8 @@ void ChangeReconciler::applyChange(const QJsonObject &change, const ReconcileCon
             context.store->mapBlock(context.documentId, block.id, remoteId);
             const int index = qMax(0, blockJson.value(QStringLiteral("position")).toInt() - 1);
             context.session->applyRemoteInsert(block, index);
+            context.store->setRemoteVersion(context.documentId, block.id,
+                                            blockJson.value(QStringLiteral("lock_version")).toInt());
             noteMedia(blockJson, remoteId, mediaJson, context);
             return;
         }
@@ -234,6 +256,8 @@ void ChangeReconciler::applyChange(const QJsonObject &change, const ReconcileCon
 
         Block updated = blockFromJson(blockJson, localId);
         context.session->applyRemoteUpdate(localId, updated);
+        context.store->setRemoteVersion(context.documentId, localId,
+                                        blockJson.value(QStringLiteral("lock_version")).toInt());
         noteMedia(blockJson, remoteId, mediaJson, context);
         return;
     }
@@ -263,6 +287,12 @@ void ChangeReconciler::applyChange(const QJsonObject &change, const ReconcileCon
                                  .value(QStringLiteral("position"))
                                  .toInt();
         context.session->applyRemoteMove(localId, qMax(0, position - 1));
+        const QJsonObject blockJson = payload.value(QStringLiteral("block")).toObject();
+        if (!context.pendingBlockIds.contains(localId)
+            && blockJson.contains(QStringLiteral("lock_version"))) {
+            context.store->setRemoteVersion(context.documentId, localId,
+                                            blockJson.value(QStringLiteral("lock_version")).toInt());
+        }
         return;
     }
 
@@ -288,6 +318,12 @@ void ChangeReconciler::applyChange(const QJsonObject &change, const ReconcileCon
             return;
         }
         context.session->applyRemoteTitle(remoteTitle);
+        if (payload.contains(QStringLiteral("title_version"))) {
+            const Document &document = context.session->document();
+            context.session->setCloudState(document.cloudId, document.cloudState,
+                document.syncCursor, document.feedGeneration,
+                payload.value(QStringLiteral("title_version")).toVariant().toLongLong());
+        }
         return;
     }
 }

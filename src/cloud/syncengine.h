@@ -83,6 +83,7 @@ signals:
 private:
     enum class Stage { Idle, Creating, Pushing, Pulling, Snapshotting, Resolving };
 
+    void cancelSync();
     void setState(const QString &state);
     void setBusy(bool busy);
     void setError(const QString &error);
@@ -123,7 +124,8 @@ private:
     int m_conflictCount = 0;
     int m_snapshotPage = 1;
     int m_snapshotTotalPages = 1;
-    BlockList m_snapshotBlocks;
+    QJsonArray m_snapshotBlocks;
+    QJsonArray m_snapshotResults;
     QHash<QString, int> m_snapshotLockVersions;
     QVector<PendingOperation> m_inFlightOperations;
     QVariantList m_remoteContentVersions;

@@ -28,6 +28,7 @@ public:
     explicit CloudClient(QObject *parent = nullptr);
 
     void setAccount(AccountSession *account);
+    void cancelRequests();
     QString baseUrl() const;
     bool hasToken() const;
 
@@ -59,6 +60,7 @@ private:
     void finishJson(QNetworkReply *reply, const QString &operation,
                     std::function<void(const QJsonObject &)> onSuccess);
 
+    quint64 m_requestGeneration = 0;
     QNetworkAccessManager *m_network = nullptr;
     AccountSession *m_account = nullptr;
 };
